@@ -976,7 +976,7 @@ export default function App() {
                                     )}
                                   </button>
 
-                                  <div className="min-w-0 space-y-1">
+                                  <div translate="no" className="notranslate min-w-0 space-y-1">
                                     <div className="flex flex-wrap items-center gap-1.5 text-xs text-slate-500">
                                       <span className="font-mono tabular-nums font-semibold text-slate-900">
                                         #{ex.priorityRank}

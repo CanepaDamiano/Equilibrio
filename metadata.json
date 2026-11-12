@@ -2,5 +2,7 @@
   "name": "Equilibrio",
   "description": "AI-powered university exercise triage and study-rest planner that prioritizes high-impact assignments to protect student sleep.",
   "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
 }

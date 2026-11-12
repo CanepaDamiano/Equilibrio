@@ -55,7 +55,7 @@ export const FocusSessionModal: React.FC<FocusSessionModalProps> = ({
       <div className="animate-eq-modal w-full max-w-2xl rounded-2xl border border-slate-200 bg-white shadow-2xl overflow-hidden">
         {/* Top bar */}
         <div className="flex items-center justify-between border-b border-slate-100 px-6 py-4">
-          <div className="flex items-center gap-2 text-xs text-slate-500">
+          <div translate="no" className="notranslate flex items-center gap-2 text-xs text-slate-500">
             <BookOpen className="h-3.5 w-3.5 text-teal-700" />
             <span>{exercise.course}</span>
             <span aria-hidden="true">·</span>
@@ -77,7 +77,7 @@ export const FocusSessionModal: React.FC<FocusSessionModalProps> = ({
 
         {/* Main body */}
         <div className="space-y-5 p-6">
-          <div>
+          <div translate="no" className="notranslate">
             <h2
               id="focus-modal-title"
               className="text-xl font-semibold text-slate-900"

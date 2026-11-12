@@ -193,12 +193,14 @@ ${JSON.stringify(
       const response = await ai.models.generateContent({
         model: 'gemini-4-hydrogen',
         contents: `Extract individual university exercises from the following raw assignment sheet text. Default course name if not mentioned: "${defaultCourse || 'University Course'}".
+CRITICAL LANGUAGE RULE: Do NOT translate the exercises into Italian or any other language. Keep each exercise's title, description, course, topic, and keyConcepts in the EXACT original language as written in the source text.
+
 Raw Text:
 ${rawText}`,
         config: {
           thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
           systemInstruction:
-            'Extract each distinct exercise or problem from the student’s pasted assignment text. Estimate realistic completion minutes (15-90), complexity (1-5), examRelevance (Low, Medium, High, Critical), exerciseType (Proof, Problem Set, Coding Lab, Case Study, Drill, Past Exam), and 1-3 keyConcepts.',
+            'Extract each distinct exercise or problem from the student’s pasted assignment text. CRITICAL: Never translate exercise titles, descriptions, topics, or courses into Italian or any other language—always preserve the exact original language and verbatim wording of the source text. Estimate realistic completion minutes (15-90), complexity (1-5), examRelevance (Low, Medium, High, Critical), exerciseType (Proof, Problem Set, Coding Lab, Case Study, Drill, Past Exam), and 1-3 keyConcepts.',
           responseMimeType: 'application/json',
           responseSchema: {
             type: Type.OBJECT,
@@ -208,10 +210,26 @@ ${rawText}`,
                 items: {
                   type: Type.OBJECT,
                   properties: {
-                    title: { type: Type.STRING },
-                    course: { type: Type.STRING },
-                    topic: { type: Type.STRING },
-                    description: { type: Type.STRING },
+                    title: {
+                      type: Type.STRING,
+                      description:
+                        'The exact title or problem statement in its original language as written in the source text. Never translate.',
+                    },
+                    course: {
+                      type: Type.STRING,
+                      description:
+                        'The course name in its original language (or defaultCourse). Never translate.',
+                    },
+                    topic: {
+                      type: Type.STRING,
+                      description:
+                        'The academic topic in the original language of the exercise. Never translate into Italian.',
+                    },
+                    description: {
+                      type: Type.STRING,
+                      description:
+                        'The verbatim exercise description or instructions in the exact original language of the source text. Never translate.',
+                    },
                     estimatedMinutes: { type: Type.INTEGER },
                     complexity: { type: Type.INTEGER },
                     examRelevance: { type: Type.STRING },
@@ -220,6 +238,8 @@ ${rawText}`,
                     keyConcepts: {
                       type: Type.ARRAY,
                       items: { type: Type.STRING },
+                      description:
+                        '1-3 key concepts in the original language of the exercise.',
                     },
                   },
                   required: [
@@ -270,7 +290,11 @@ ${rawText}`,
       const parts: any[] = [];
       if (typeof textContent === 'string' && textContent.trim().length > 0) {
         parts.push({
-          text: `Extract all university exercises from the uploaded file "${fileName || 'assignment'}". Default course if not specified: "${defaultCourse || 'Course Assignment'}".\n\nFile Content:\n${textContent}`,
+          text: `Extract all university exercises from the uploaded file "${fileName || 'assignment'}". Default course if not specified: "${defaultCourse || 'Course Assignment'}".
+CRITICAL LANGUAGE RULE: Do NOT translate the exercises into Italian or any other language. Preserve the exact original language and verbatim wording of every exercise in the file.
+
+File Content:
+${textContent}`,
         });
       } else if (base64Data && mimeType) {
         parts.push({
@@ -280,7 +304,8 @@ ${rawText}`,
           },
         });
         parts.push({
-          text: `Extract all individual university exercises or problems from this uploaded assignment file ("${fileName || 'document'}"). Default course name if not mentioned in the document: "${defaultCourse || 'Course Assignment'}".`,
+          text: `Extract all individual university exercises or problems from this uploaded assignment file ("${fileName || 'document'}"). Default course name if not mentioned in the document: "${defaultCourse || 'Course Assignment'}".
+CRITICAL LANGUAGE RULE: Do NOT translate the exercises into Italian or any other language. You MUST keep each exercise's title, description, topic, course, and keyConcepts in the EXACT original language written in the uploaded document.`,
         });
       }
 
@@ -290,7 +315,7 @@ ${rawText}`,
         config: {
           thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
           systemInstruction:
-            'Extract each distinct exercise or problem from the uploaded university assignment file. Estimate realistic completion minutes (15-90), complexity (1-5), examRelevance (Low, Medium, High, Critical), exerciseType (Proof, Problem Set, Coding Lab, Case Study, Drill, Past Exam), and 1-3 keyConcepts.',
+            'Extract each distinct exercise or problem from the uploaded university assignment file. CRITICAL: Never translate the exercises into Italian or any other language—always preserve the exact original language and verbatim text of the source document for title, description, topic, course, and keyConcepts. Estimate realistic completion minutes (15-90), complexity (1-5), examRelevance (Low, Medium, High, Critical), exerciseType (Proof, Problem Set, Coding Lab, Case Study, Drill, Past Exam), and 1-3 keyConcepts.',
           responseMimeType: 'application/json',
           responseSchema: {
             type: Type.OBJECT,
@@ -300,10 +325,26 @@ ${rawText}`,
                 items: {
                   type: Type.OBJECT,
                   properties: {
-                    title: { type: Type.STRING },
-                    course: { type: Type.STRING },
-                    topic: { type: Type.STRING },
-                    description: { type: Type.STRING },
+                    title: {
+                      type: Type.STRING,
+                      description:
+                        'The exact title or problem statement in its original language as written in the uploaded file. Never translate.',
+                    },
+                    course: {
+                      type: Type.STRING,
+                      description:
+                        'The course name in the original language of the document (or defaultCourse). Never translate.',
+                    },
+                    topic: {
+                      type: Type.STRING,
+                      description:
+                        'The academic topic in the original language of the document. Never translate into Italian.',
+                    },
+                    description: {
+                      type: Type.STRING,
+                      description:
+                        'The verbatim problem statement or description in the exact original language of the uploaded file. Never translate.',
+                    },
                     estimatedMinutes: { type: Type.INTEGER },
                     complexity: { type: Type.INTEGER },
                     examRelevance: { type: Type.STRING },
@@ -312,6 +353,8 @@ ${rawText}`,
                     keyConcepts: {
                       type: Type.ARRAY,
                       items: { type: Type.STRING },
+                      description:
+                        '1-3 key concepts in the original language of the document.',
                     },
                   },
                   required: [

@@ -122,7 +122,7 @@ export const EveningTimeline: React.FC<EveningTimelineProps> = ({
                   {block.startTime}–{block.endTime}
                 </div>
 
-                <div className="min-w-0">
+                <div translate="no" className="notranslate min-w-0">
                   <div className="flex items-center gap-2">
                     {isStudy && (
                       <BookOpen className="h-3.5 w-3.5 text-slate-700 shrink-0" />
