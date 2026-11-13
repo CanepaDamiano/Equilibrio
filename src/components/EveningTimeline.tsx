@@ -33,49 +33,49 @@ export const EveningTimeline: React.FC<EveningTimelineProps> = ({
   );
 
   return (
-    <div className="animate-eq-fade-up rounded-2xl border border-slate-200/80 bg-white overflow-hidden">
+    <div className="animate-eq-fade-up rounded-2xl border border-slate-200/80 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-hidden transition-colors duration-200">
       {/* Summary Header */}
-      <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-100 px-6 py-5">
+      <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-100 dark:border-slate-800/80 px-6 py-5">
         <div>
-          <h2 className="text-sm font-semibold text-slate-900">
+          <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
             Evening Study-Rest Timeline
           </h2>
-          <p className="mt-0.5 text-xs text-slate-500">
+          <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
             Session starts at{' '}
-            <span className="font-mono tabular-nums font-medium text-slate-800">
+            <span className="font-mono tabular-nums font-medium text-slate-800 dark:text-slate-200">
               {budget.currentHour}
             </span>{' '}
             · Projected study completion at{' '}
-            <span className="font-mono tabular-nums font-medium text-slate-800">
+            <span className="font-mono tabular-nums font-medium text-slate-800 dark:text-slate-200">
               {summary.projectedFinishTime}
             </span>{' '}
             · Target sleep at{' '}
-            <span className="font-mono tabular-nums font-medium text-slate-800">
+            <span className="font-mono tabular-nums font-medium text-slate-800 dark:text-slate-200">
               {budget.targetBedtime}
             </span>
           </p>
         </div>
 
         <div className="flex items-center gap-4 text-xs font-mono tabular-nums">
-          <span className="text-slate-600">
+          <span className="text-slate-600 dark:text-slate-400">
             Focus:{' '}
-            <strong className="font-semibold text-slate-900">
+            <strong className="font-semibold text-slate-900 dark:text-slate-100">
               {summary.selectedStudyMinutes}m
             </strong>
           </span>
-          <span aria-hidden="true" className="text-slate-300">
+          <span aria-hidden="true" className="text-slate-300 dark:text-slate-700">
             ·
           </span>
-          <span className="text-slate-600">
+          <span className="text-slate-600 dark:text-slate-400">
             Breaks:{' '}
-            <strong className="font-semibold text-slate-900">
+            <strong className="font-semibold text-slate-900 dark:text-slate-100">
               {summary.breakMinutes}m
             </strong>
           </span>
-          <span aria-hidden="true" className="text-slate-300">
+          <span aria-hidden="true" className="text-slate-300 dark:text-slate-700">
             ·
           </span>
-          <span className="text-teal-700 font-medium">
+          <span className="text-teal-700 dark:text-teal-400 font-medium">
             Saved: {summary.timeSavedMinutes}m
           </span>
         </div>
@@ -83,22 +83,22 @@ export const EveningTimeline: React.FC<EveningTimelineProps> = ({
 
       {/* Proportion Bar */}
       {summary.totalExercises > 0 && (
-        <div className="border-b border-slate-100 px-6 py-3 bg-slate-50/40">
-          <div className="flex h-1.5 w-full overflow-hidden rounded-full bg-slate-100">
+        <div className="border-b border-slate-100 dark:border-slate-800/80 px-6 py-3 bg-slate-50/40 dark:bg-slate-950/40">
+          <div className="flex h-1.5 w-full overflow-hidden rounded-full bg-slate-100 dark:bg-slate-800">
             <div
               style={{ width: `${focusPercentage}%` }}
-              className="animate-eq-bar bg-slate-900 transition-all duration-500"
+              className="animate-eq-bar bg-slate-900 dark:bg-slate-100 transition-all duration-500"
             />
             <div
               style={{ width: `${savedPercentage}%` }}
-              className="animate-eq-bar bg-teal-600/45 transition-all duration-500"
+              className="animate-eq-bar bg-teal-600/45 dark:bg-teal-400/50 transition-all duration-500"
             />
           </div>
         </div>
       )}
 
       {/* Chronological Blocks */}
-      <div className="divide-y divide-slate-100">
+      <div className="divide-y divide-slate-100 dark:divide-slate-800/80">
         {schedule.map((block, index) => {
           const isStudy = block.type === 'study';
           const isBreak = block.type === 'break';
@@ -111,50 +111,50 @@ export const EveningTimeline: React.FC<EveningTimelineProps> = ({
               style={{ animationDelay: `${index * 45}ms` }}
               className={`animate-eq-fade-up flex items-center justify-between gap-4 px-6 py-4 transition-colors duration-200 ${
                 isSleep
-                  ? 'bg-slate-50/80'
+                  ? 'bg-slate-50/80 dark:bg-slate-950/60'
                   : isWindDown
-                  ? 'bg-teal-50/20'
-                  : 'hover:bg-slate-50/60'
+                  ? 'bg-teal-50/20 dark:bg-teal-950/20'
+                  : 'hover:bg-slate-50/60 dark:hover:bg-slate-800/40'
               }`}
             >
               <div className="flex items-start gap-4 min-w-0">
-                <div className="w-24 shrink-0 pt-0.5 text-xs font-mono tabular-nums text-slate-500">
+                <div className="w-24 shrink-0 pt-0.5 text-xs font-mono tabular-nums text-slate-500 dark:text-slate-400">
                   {block.startTime}–{block.endTime}
                 </div>
 
                 <div translate="no" className="notranslate min-w-0">
                   <div className="flex items-center gap-2">
                     {isStudy && (
-                      <BookOpen className="h-3.5 w-3.5 text-slate-700 shrink-0" />
+                      <BookOpen className="h-3.5 w-3.5 text-slate-700 dark:text-slate-300 shrink-0" />
                     )}
                     {isBreak && (
-                      <Coffee className="h-3.5 w-3.5 text-amber-600 shrink-0" />
+                      <Coffee className="h-3.5 w-3.5 text-amber-600 dark:text-amber-400 shrink-0" />
                     )}
                     {isWindDown && (
-                      <Sunset className="h-3.5 w-3.5 text-teal-700 shrink-0" />
+                      <Sunset className="h-3.5 w-3.5 text-teal-700 dark:text-teal-400 shrink-0" />
                     )}
                     {isSleep && (
-                      <Moon className="h-3.5 w-3.5 text-slate-700 shrink-0" />
+                      <Moon className="h-3.5 w-3.5 text-slate-700 dark:text-slate-300 shrink-0" />
                     )}
-                    <h3 className="text-sm font-medium text-slate-900 truncate">
+                    <h3 className="text-sm font-medium text-slate-900 dark:text-slate-100 truncate">
                       {block.title}
                     </h3>
                   </div>
-                  <p className="mt-0.5 text-xs text-slate-500 truncate">
+                  <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400 truncate">
                     {block.subtitle}
                   </p>
                 </div>
               </div>
 
               <div className="flex items-center gap-3 shrink-0">
-                <span className="text-xs font-mono tabular-nums text-slate-400">
+                <span className="text-xs font-mono tabular-nums text-slate-400 dark:text-slate-500">
                   {block.durationMinutes}m
                 </span>
                 {isStudy && block.exerciseId && onStartStudyBlock && (
                   <button
                     type="button"
                     onClick={() => onStartStudyBlock(block.exerciseId!)}
-                    className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-900 hover:text-white hover:border-slate-900 active:scale-[0.97] transition-all duration-150 whitespace-nowrap shrink-0"
+                    className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-900 hover:text-white hover:border-slate-900 dark:hover:bg-slate-100 dark:hover:text-slate-900 dark:hover:border-slate-100 active:scale-[0.97] transition-all duration-150 whitespace-nowrap shrink-0"
                   >
                     Start Focus
                   </button>

@@ -24,6 +24,30 @@ function getGenAIClient(): GoogleGenAI | null {
   });
 }
 
+function safeParseGeminiJson(rawText?: string): any {
+  const cleaned = (rawText ?? '{}')
+    .trim()
+    .replace(/^```(?:json)?\s*/i, '')
+    .replace(/\s*```$/i, '')
+    .trim();
+  return JSON.parse(cleaned || '{}');
+}
+
+function withTimeout<T>(promise: Promise<T>, ms = 15000): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`Operation timed out after ${ms}ms`)), ms);
+    promise
+      .then((val) => {
+        clearTimeout(timer);
+        resolve(val);
+      })
+      .catch((err) => {
+        clearTimeout(timer);
+        reject(err);
+      });
+  });
+}
+
 async function startServer() {
   const app = express();
   const PORT = 3000;
@@ -60,7 +84,7 @@ ${JSON.stringify(
     title: e.title,
     course: e.course,
     topic: e.topic,
-    description: e.description,
+    description: typeof e.description === 'string' ? e.description.slice(0, 280) : '',
     estimatedMinutes: e.estimatedMinutes,
     complexity: e.complexity,
     examRelevance: e.examRelevance,
@@ -71,70 +95,73 @@ ${JSON.stringify(
   2
 )}`;
 
-      const response = await ai.models.generateContent({
-        model: 'gemini-4-hydrogen',
-        contents: prompt,
-        config: {
-          thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
-          systemInstruction:
-            'Always respond in clear, encouraging, academically rigorous English. Prioritize student sleep health and Pareto (80/20) conceptual efficiency.',
-          responseMimeType: 'application/json',
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              aiInsight: {
-                type: Type.STRING,
-                description:
-                  'A concise 1-2 sentence executive summary explaining how tonight’s selection maximizes exam readiness while protecting sleep.',
-              },
-              decisions: {
-                type: Type.ARRAY,
-                items: {
-                  type: Type.OBJECT,
-                  properties: {
-                    id: { type: Type.STRING },
-                    triageStatus: {
-                      type: Type.STRING,
-                      description: 'Must be one of: Essential, High-Yield, Optional, Defer',
+      const response = await withTimeout(
+        ai.models.generateContent({
+          model: 'gemini-4-hydrogen',
+          contents: prompt,
+          config: {
+            thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+            systemInstruction:
+              'Always respond in clear, encouraging, academically rigorous English. Prioritize student sleep health and Pareto (80/20) conceptual efficiency.',
+            responseMimeType: 'application/json',
+            responseSchema: {
+              type: Type.OBJECT,
+              properties: {
+                aiInsight: {
+                  type: Type.STRING,
+                  description:
+                    'A concise 1-2 sentence executive summary explaining how tonight’s selection maximizes exam readiness while protecting sleep.',
+                },
+                decisions: {
+                  type: Type.ARRAY,
+                  items: {
+                    type: Type.OBJECT,
+                    properties: {
+                      id: { type: Type.STRING },
+                      triageStatus: {
+                        type: Type.STRING,
+                        description: 'Must be one of: Essential, High-Yield, Optional, Defer',
+                      },
+                      priorityRank: { type: Type.INTEGER },
+                      pedagogicalScore: {
+                        type: Type.INTEGER,
+                        description: 'Score from 10 to 99 indicating learning utility per minute.',
+                      },
+                      rationale: {
+                        type: Type.STRING,
+                        description:
+                          'Specific academic reason why this exercise is selected for tonight or safely deferred.',
+                      },
+                      studyTip: {
+                        type: Type.STRING,
+                        description:
+                          'Concrete 1-sentence tactical advice on how to solve or skim this exercise efficiently.',
+                      },
+                      redundancyNote: {
+                        type: Type.STRING,
+                        description:
+                          'Optional short note if this overlaps with a higher-priority problem.',
+                      },
                     },
-                    priorityRank: { type: Type.INTEGER },
-                    pedagogicalScore: {
-                      type: Type.INTEGER,
-                      description: 'Score from 10 to 99 indicating learning utility per minute.',
-                    },
-                    rationale: {
-                      type: Type.STRING,
-                      description:
-                        'Specific academic reason why this exercise is selected for tonight or safely deferred.',
-                    },
-                    studyTip: {
-                      type: Type.STRING,
-                      description:
-                        'Concrete 1-sentence tactical advice on how to solve or skim this exercise efficiently.',
-                    },
-                    redundancyNote: {
-                      type: Type.STRING,
-                      description:
-                        'Optional short note if this overlaps with a higher-priority problem.',
-                    },
+                    required: [
+                      'id',
+                      'triageStatus',
+                      'priorityRank',
+                      'pedagogicalScore',
+                      'rationale',
+                      'studyTip',
+                    ],
                   },
-                  required: [
-                    'id',
-                    'triageStatus',
-                    'priorityRank',
-                    'pedagogicalScore',
-                    'rationale',
-                    'studyTip',
-                  ],
                 },
               },
+              required: ['aiInsight', 'decisions'],
             },
-            required: ['aiInsight', 'decisions'],
           },
-        },
-      });
+        }),
+        15000
+      );
 
-      const parsed = JSON.parse((response.text ?? '{}').trim());
+      const parsed = safeParseGeminiJson(response.text);
       return res.json({
         mode: 'gemini',
         aiInsight: parsed.aiInsight,
@@ -190,79 +217,82 @@ ${JSON.stringify(
     }
 
     try {
-      const response = await ai.models.generateContent({
-        model: 'gemini-4-hydrogen',
-        contents: `Extract individual university exercises from the following raw assignment sheet text. Default course name if not mentioned: "${defaultCourse || 'University Course'}".
+      const response = await withTimeout(
+        ai.models.generateContent({
+          model: 'gemini-4-hydrogen',
+          contents: `Extract individual university exercises from the following raw assignment sheet text. Default course name if not mentioned: "${defaultCourse || 'University Course'}".
 CRITICAL LANGUAGE RULE: Do NOT translate the exercises into Italian or any other language. Keep each exercise's title, description, course, topic, and keyConcepts in the EXACT original language as written in the source text.
 
 Raw Text:
 ${rawText}`,
-        config: {
-          thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
-          systemInstruction:
-            'Extract each distinct exercise or problem from the student’s pasted assignment text. CRITICAL: Never translate exercise titles, descriptions, topics, or courses into Italian or any other language—always preserve the exact original language and verbatim wording of the source text. Estimate realistic completion minutes (15-90), complexity (1-5), examRelevance (Low, Medium, High, Critical), exerciseType (Proof, Problem Set, Coding Lab, Case Study, Drill, Past Exam), and 1-3 keyConcepts.',
-          responseMimeType: 'application/json',
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              exercises: {
-                type: Type.ARRAY,
-                items: {
-                  type: Type.OBJECT,
-                  properties: {
-                    title: {
-                      type: Type.STRING,
-                      description:
-                        'The exact title or problem statement in its original language as written in the source text. Never translate.',
+          config: {
+            thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+            systemInstruction:
+              'Extract each distinct exercise or problem from the student’s pasted assignment text. CRITICAL: Never translate exercise titles, descriptions, topics, or courses into Italian or any other language—always preserve the exact original language and verbatim wording of the source text. Estimate realistic completion minutes (15-90), complexity (1-5), examRelevance (Low, Medium, High, Critical), exerciseType (Proof, Problem Set, Coding Lab, Case Study, Drill, Past Exam), and 1-3 keyConcepts.',
+            responseMimeType: 'application/json',
+            responseSchema: {
+              type: Type.OBJECT,
+              properties: {
+                exercises: {
+                  type: Type.ARRAY,
+                  items: {
+                    type: Type.OBJECT,
+                    properties: {
+                      title: {
+                        type: Type.STRING,
+                        description:
+                          'The exact title or problem statement in its original language as written in the source text. Never translate.',
+                      },
+                      course: {
+                        type: Type.STRING,
+                        description:
+                          'The course name in its original language (or defaultCourse). Never translate.',
+                      },
+                      topic: {
+                        type: Type.STRING,
+                        description:
+                          'The academic topic in the original language of the exercise. Never translate into Italian.',
+                      },
+                      description: {
+                        type: Type.STRING,
+                        description:
+                          'The verbatim exercise description or instructions in the exact original language of the source text. Never translate.',
+                      },
+                      estimatedMinutes: { type: Type.INTEGER },
+                      complexity: { type: Type.INTEGER },
+                      examRelevance: { type: Type.STRING },
+                      exerciseType: { type: Type.STRING },
+                      dueDate: { type: Type.STRING },
+                      keyConcepts: {
+                        type: Type.ARRAY,
+                        items: { type: Type.STRING },
+                        description:
+                          '1-3 key concepts in the original language of the exercise.',
+                      },
                     },
-                    course: {
-                      type: Type.STRING,
-                      description:
-                        'The course name in its original language (or defaultCourse). Never translate.',
-                    },
-                    topic: {
-                      type: Type.STRING,
-                      description:
-                        'The academic topic in the original language of the exercise. Never translate into Italian.',
-                    },
-                    description: {
-                      type: Type.STRING,
-                      description:
-                        'The verbatim exercise description or instructions in the exact original language of the source text. Never translate.',
-                    },
-                    estimatedMinutes: { type: Type.INTEGER },
-                    complexity: { type: Type.INTEGER },
-                    examRelevance: { type: Type.STRING },
-                    exerciseType: { type: Type.STRING },
-                    dueDate: { type: Type.STRING },
-                    keyConcepts: {
-                      type: Type.ARRAY,
-                      items: { type: Type.STRING },
-                      description:
-                        '1-3 key concepts in the original language of the exercise.',
-                    },
+                    required: [
+                      'title',
+                      'course',
+                      'topic',
+                      'description',
+                      'estimatedMinutes',
+                      'complexity',
+                      'examRelevance',
+                      'exerciseType',
+                      'dueDate',
+                      'keyConcepts',
+                    ],
                   },
-                  required: [
-                    'title',
-                    'course',
-                    'topic',
-                    'description',
-                    'estimatedMinutes',
-                    'complexity',
-                    'examRelevance',
-                    'exerciseType',
-                    'dueDate',
-                    'keyConcepts',
-                  ],
                 },
               },
+              required: ['exercises'],
             },
-            required: ['exercises'],
           },
-        },
-      });
+        }),
+        15000
+      );
 
-      const parsed = JSON.parse((response.text ?? '{}').trim());
+      const parsed = safeParseGeminiJson(response.text);
       return res.json({ mode: 'gemini', exercises: parsed.exercises || [] });
     } catch (err) {
       return res.status(500).json({ error: 'Failed to parse assignment sheet.' });
@@ -309,75 +339,78 @@ CRITICAL LANGUAGE RULE: Do NOT translate the exercises into Italian or any other
         });
       }
 
-      const response = await ai.models.generateContent({
-        model: 'gemini-4-hydrogen',
-        contents: { parts },
-        config: {
-          thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
-          systemInstruction:
-            'Extract each distinct exercise or problem from the uploaded university assignment file. CRITICAL: Never translate the exercises into Italian or any other language—always preserve the exact original language and verbatim text of the source document for title, description, topic, course, and keyConcepts. Estimate realistic completion minutes (15-90), complexity (1-5), examRelevance (Low, Medium, High, Critical), exerciseType (Proof, Problem Set, Coding Lab, Case Study, Drill, Past Exam), and 1-3 keyConcepts.',
-          responseMimeType: 'application/json',
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              exercises: {
-                type: Type.ARRAY,
-                items: {
-                  type: Type.OBJECT,
-                  properties: {
-                    title: {
-                      type: Type.STRING,
-                      description:
-                        'The exact title or problem statement in its original language as written in the uploaded file. Never translate.',
+      const response = await withTimeout(
+        ai.models.generateContent({
+          model: 'gemini-4-hydrogen',
+          contents: { parts },
+          config: {
+            thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+            systemInstruction:
+              'Extract each distinct exercise or problem from the uploaded university assignment file. CRITICAL: Never translate the exercises into Italian or any other language—always preserve the exact original language and verbatim text of the source document for title, description, topic, course, and keyConcepts. Estimate realistic completion minutes (15-90), complexity (1-5), examRelevance (Low, Medium, High, Critical), exerciseType (Proof, Problem Set, Coding Lab, Case Study, Drill, Past Exam), and 1-3 keyConcepts.',
+            responseMimeType: 'application/json',
+            responseSchema: {
+              type: Type.OBJECT,
+              properties: {
+                exercises: {
+                  type: Type.ARRAY,
+                  items: {
+                    type: Type.OBJECT,
+                    properties: {
+                      title: {
+                        type: Type.STRING,
+                        description:
+                          'The exact title or problem statement in its original language as written in the uploaded file. Never translate.',
+                      },
+                      course: {
+                        type: Type.STRING,
+                        description:
+                          'The course name in the original language of the document (or defaultCourse). Never translate.',
+                      },
+                      topic: {
+                        type: Type.STRING,
+                        description:
+                          'The academic topic in the original language of the document. Never translate into Italian.',
+                      },
+                      description: {
+                        type: Type.STRING,
+                        description:
+                          'The verbatim problem statement or description in the exact original language of the uploaded file. Never translate.',
+                      },
+                      estimatedMinutes: { type: Type.INTEGER },
+                      complexity: { type: Type.INTEGER },
+                      examRelevance: { type: Type.STRING },
+                      exerciseType: { type: Type.STRING },
+                      dueDate: { type: Type.STRING },
+                      keyConcepts: {
+                        type: Type.ARRAY,
+                        items: { type: Type.STRING },
+                        description:
+                          '1-3 key concepts in the original language of the document.',
+                      },
                     },
-                    course: {
-                      type: Type.STRING,
-                      description:
-                        'The course name in the original language of the document (or defaultCourse). Never translate.',
-                    },
-                    topic: {
-                      type: Type.STRING,
-                      description:
-                        'The academic topic in the original language of the document. Never translate into Italian.',
-                    },
-                    description: {
-                      type: Type.STRING,
-                      description:
-                        'The verbatim problem statement or description in the exact original language of the uploaded file. Never translate.',
-                    },
-                    estimatedMinutes: { type: Type.INTEGER },
-                    complexity: { type: Type.INTEGER },
-                    examRelevance: { type: Type.STRING },
-                    exerciseType: { type: Type.STRING },
-                    dueDate: { type: Type.STRING },
-                    keyConcepts: {
-                      type: Type.ARRAY,
-                      items: { type: Type.STRING },
-                      description:
-                        '1-3 key concepts in the original language of the document.',
-                    },
+                    required: [
+                      'title',
+                      'course',
+                      'topic',
+                      'description',
+                      'estimatedMinutes',
+                      'complexity',
+                      'examRelevance',
+                      'exerciseType',
+                      'dueDate',
+                      'keyConcepts',
+                    ],
                   },
-                  required: [
-                    'title',
-                    'course',
-                    'topic',
-                    'description',
-                    'estimatedMinutes',
-                    'complexity',
-                    'examRelevance',
-                    'exerciseType',
-                    'dueDate',
-                    'keyConcepts',
-                  ],
                 },
               },
+              required: ['exercises'],
             },
-            required: ['exercises'],
           },
-        },
-      });
+        }),
+        15000
+      );
 
-      const parsed = JSON.parse((response.text ?? '{}').trim());
+      const parsed = safeParseGeminiJson(response.text);
       return res.json({ mode: 'gemini', exercises: parsed.exercises || [] });
     } catch (err) {
       return res.status(200).json({

@@ -186,6 +186,11 @@ Matrix Addition Worksheet,Linear Algebra,Matrices,30,1,Low,Drill`;
   assert.equal(fromQuoted[0].estimatedMinutes, 40);
 });
 
+import {
+  mergeImportedExercises,
+  mergeAiTriageDecisions,
+} from './triageEngine';
+
 test('completed exercises are removed from upcoming evening schedule blocks and generic topics do not collide', () => {
   const genericTopicItems = [
     {
@@ -230,5 +235,82 @@ test('completed exercises are removed from upcoming evening schedule blocks and 
   const studyBlocks = schedule.filter((b) => b.type === 'study');
   assert.equal(studyBlocks.length, 1);
 });
+
+test('re-uploading a previously uploaded file deduplicates exercises, resets completion, and preserves accurate triage', () => {
+  const csvContent = `Title,Course,Topic,Minutes,Complexity,Relevance,Type
+Spectral Theorem Proof,Linear Algebra,Eigenvalues,45,5,Critical,Proof
+Jordan Normal Form Derivation,Linear Algebra,Canonical Forms,45,4,High,Problem Set
+Routine Matrix Addition Drill,Linear Algebra,Matrices,60,1,Low,Drill`;
+
+  const firstParse = parseStructuredExerciseFile(csvContent, 'algebra.csv');
+  const firstMerged = mergeImportedExercises(firstParse, [], 'merge', 'upload1');
+  const firstTriaged = triageExercises(firstMerged, mockBudget);
+
+  assert.equal(firstTriaged.length, 3);
+  const firstSelected = firstTriaged.filter(
+    (e) => e.triageStatus === 'Essential' || e.triageStatus === 'High-Yield'
+  );
+  assert.equal(firstSelected.length, 2);
+
+  // Simulate user completing the first exercise and then re-uploading the EXACT same file
+  firstTriaged[0].completed = true;
+
+  const secondParse = parseStructuredExerciseFile(csvContent, 'algebra.csv');
+  const secondMerged = mergeImportedExercises(secondParse, firstTriaged, 'merge', 'upload2');
+  const secondTriaged = triageExercises(secondMerged, mockBudget);
+
+  // Must still be 3 exercises (no duplicates!), with completion reset and identical clean triage
+  assert.equal(secondTriaged.length, 3);
+  assert.equal(secondTriaged.every((e) => e.completed === false), true);
+  assert.equal(
+    secondTriaged.some((e) => e.redundancyNote?.includes(e.title)),
+    false
+  );
+  const secondSelected = secondTriaged.filter(
+    (e) => e.triageStatus === 'Essential' || e.triageStatus === 'High-Yield'
+  );
+  assert.equal(secondSelected.length, 2);
+  assert.equal(secondSelected[0].title, 'Spectral Theorem Proof');
+  assert.equal(secondSelected[1].title, 'Jordan Normal Form Derivation');
+});
+
+test('mergeAiTriageDecisions normalizes priorityRank and enforces student study budget window', () => {
+  const csvContent = `Titolo,Corso,Argomento,Minuti,Difficoltà,Rilevanza,Tipo
+Teorema Spettrale,Algebra Lineare,Autovalori,60,5,Critico,Dimostrazione
+Forma Canonica di Jordan,Algebra Lineare,Forme Canoniche,60,4,Alta,Esercizio
+Sistemi Lineari Base,Algebra Lineare,Matrici,60,2,Bassa,Calcolo`;
+
+  const parsed = parseStructuredExerciseFile(csvContent, 'esercizi.csv');
+  assert.equal(parsed.length, 3);
+  assert.equal(parsed[0].exerciseType, 'Proof');
+  assert.equal(parsed[0].examRelevance, 'Critical');
+
+  const initial = triageExercises(
+    mergeImportedExercises(parsed, [], 'replace', 'init'),
+    mockBudget
+  );
+
+  // Suppose AI erroneously marks all 3 (180m > 120m budget) as Essential with duplicate rank 1
+  const aiDecisions = initial.map((ex) => ({
+    id: ex.id,
+    triageStatus: 'Essential',
+    priorityRank: 1,
+    pedagogicalScore: 90,
+    rationale: 'AI custom rationale',
+    studyTip: 'AI custom study tip',
+  }));
+
+  const merged = mergeAiTriageDecisions(initial, aiDecisions, mockBudget);
+  assert.deepEqual(
+    merged.map((m) => m.priorityRank),
+    [1, 2, 3]
+  );
+  const selectedAfterAi = merged.filter(
+    (m) => m.triageStatus === 'Essential' || m.triageStatus === 'High-Yield'
+  );
+  // 60m + 10m break + 60m = 130m > 120m safeWindowMinutes, so only 1 of the 60m exercises fits strictly inside 120m with break
+  assert.equal(selectedAfterAi.length, 1);
+});
+
 
 

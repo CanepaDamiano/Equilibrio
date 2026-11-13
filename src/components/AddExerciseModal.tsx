@@ -11,6 +11,7 @@ import { X, Plus, FileText, ListPlus, Upload, FileUp, Check } from 'lucide-react
 interface AddExerciseModalProps {
   isOpen: boolean;
   initialTab?: 'file' | 'single' | 'paste';
+  existingCount?: number;
   onClose: () => void;
   onAddExercise: (
     ex: Omit<
@@ -22,26 +23,21 @@ interface AddExerciseModalProps {
     list: Omit<
       Exercise,
       'id' | 'triageStatus' | 'priorityRank' | 'pedagogicalScore' | 'rationale' | 'studyTip'
-    >[]
+    >[],
+    importMode?: 'merge' | 'replace'
   ) => void;
 }
 
 export const AddExerciseModal: React.FC<AddExerciseModalProps> = ({
   isOpen,
   initialTab = 'file',
+  existingCount = 0,
   onClose,
   onAddExercise,
   onBulkAddExercises,
 }) => {
   const [activeTab, setActiveTab] = useState<'file' | 'single' | 'paste'>(initialTab);
-
-  // Sync active tab when opened
-  useEffect(() => {
-    if (isOpen) {
-      setActiveTab(initialTab);
-      setErrorMsg('');
-    }
-  }, [isOpen, initialTab]);
+  const [importMode, setImportMode] = useState<'merge' | 'replace'>('merge');
 
   // File upload state
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -66,6 +62,20 @@ export const AddExerciseModal: React.FC<AddExerciseModalProps> = ({
   const [rawPasteText, setRawPasteText] = useState('');
   const [pasteCourse, setPasteCourse] = useState('');
   const [isParsing, setIsParsing] = useState(false);
+
+  // Sync active tab and cleanly reset file input state whenever modal opens or closes
+  useEffect(() => {
+    if (isOpen) {
+      setActiveTab(initialTab);
+      setErrorMsg('');
+      setSelectedFile(null);
+      setIsUploadingFile(false);
+      setIsParsing(false);
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
+    }
+  }, [isOpen, initialTab]);
 
   if (!isOpen) return null;
 
@@ -101,6 +111,14 @@ export const AddExerciseModal: React.FC<AddExerciseModalProps> = ({
     const f = e.target.files?.[0] || null;
     setSelectedFile(f);
     setErrorMsg('');
+  };
+
+  const resetFileModalAndClose = () => {
+    setSelectedFile(null);
+    if (fileInputRef.current) fileInputRef.current.value = '';
+    setFileCourse('');
+    setIsUploadingFile(false);
+    onClose();
   };
 
   const handleFileSubmit = async (e: React.FormEvent) => {
@@ -139,18 +157,14 @@ export const AddExerciseModal: React.FC<AddExerciseModalProps> = ({
         );
 
         if ((lowerName.endsWith('.csv') || lowerName.endsWith('.json')) && localParsed.length > 0) {
-          onBulkAddExercises(localParsed);
-          setSelectedFile(null);
-          if (fileInputRef.current) fileInputRef.current.value = '';
-          setFileCourse('');
-          setIsUploadingFile(false);
-          onClose();
+          onBulkAddExercises(localParsed, importMode);
+          resetFileModalAndClose();
           return;
         }
 
         try {
           const controller = new AbortController();
-          const timer = setTimeout(() => controller.abort(), 25000);
+          const timer = setTimeout(() => controller.abort(), 45000);
           const response = await fetch('/api/parse-file', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -171,13 +185,10 @@ export const AddExerciseModal: React.FC<AddExerciseModalProps> = ({
             data.exercises.length > 0
           ) {
             onBulkAddExercises(
-              formatServerExercises(data.exercises, fileCourse.trim() || 'Course Assignment')
+              formatServerExercises(data.exercises, fileCourse.trim() || 'Course Assignment'),
+              importMode
             );
-            setSelectedFile(null);
-            if (fileInputRef.current) fileInputRef.current.value = '';
-            setFileCourse('');
-            setIsUploadingFile(false);
-            onClose();
+            resetFileModalAndClose();
             return;
           }
         } catch {
@@ -185,12 +196,8 @@ export const AddExerciseModal: React.FC<AddExerciseModalProps> = ({
         }
 
         if (localParsed.length > 0) {
-          onBulkAddExercises(localParsed);
-          setSelectedFile(null);
-          if (fileInputRef.current) fileInputRef.current.value = '';
-          setFileCourse('');
-          setIsUploadingFile(false);
-          onClose();
+          onBulkAddExercises(localParsed, importMode);
+          resetFileModalAndClose();
           return;
         }
 
@@ -221,7 +228,7 @@ export const AddExerciseModal: React.FC<AddExerciseModalProps> = ({
         let extractedFromServer: any[] | null = null;
         try {
           const controller = new AbortController();
-          const timer = setTimeout(() => controller.abort(), 25000);
+          const timer = setTimeout(() => controller.abort(), 45000);
           const response = await fetch('/api/parse-file', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -244,32 +251,32 @@ export const AddExerciseModal: React.FC<AddExerciseModalProps> = ({
 
         if (extractedFromServer) {
           onBulkAddExercises(
-            formatServerExercises(extractedFromServer, fileCourse.trim() || 'Course Assignment')
+            formatServerExercises(extractedFromServer, fileCourse.trim() || 'Course Assignment'),
+            importMode
           );
         } else {
           const cleanTitle = fileName.replace(/\.[^/.]+$/, '').replace(/[-_]/g, ' ');
-          onBulkAddExercises([
-            {
-              title: cleanTitle || 'Uploaded Problem Set',
-              course: fileCourse.trim() || 'Course Assignment',
-              topic: 'Uploaded Document',
-              description: `Imported from ${fileName}`,
-              estimatedMinutes: 45,
-              complexity: 4,
-              examRelevance: 'High',
-              exerciseType: 'Problem Set',
-              dueDate: 'Upcoming',
-              completed: false,
-              keyConcepts: [cleanTitle || 'Problem Set'],
-            },
-          ]);
+          onBulkAddExercises(
+            [
+              {
+                title: cleanTitle || 'Uploaded Problem Set',
+                course: fileCourse.trim() || 'Course Assignment',
+                topic: 'Uploaded Document',
+                description: `Imported from ${fileName}`,
+                estimatedMinutes: 45,
+                complexity: 4,
+                examRelevance: 'High',
+                exerciseType: 'Problem Set',
+                dueDate: 'Upcoming',
+                completed: false,
+                keyConcepts: [cleanTitle || 'Problem Set'],
+              },
+            ],
+            importMode
+          );
         }
 
-        setSelectedFile(null);
-        if (fileInputRef.current) fileInputRef.current.value = '';
-        setFileCourse('');
-        setIsUploadingFile(false);
-        onClose();
+        resetFileModalAndClose();
       }
     } catch {
       setErrorMsg('Failed to process the uploaded file.');
@@ -331,7 +338,7 @@ export const AddExerciseModal: React.FC<AddExerciseModalProps> = ({
 
     try {
       const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 25000);
+      const timer = setTimeout(() => controller.abort(), 45000);
       const response = await fetch('/api/parse-assignment', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -344,7 +351,10 @@ export const AddExerciseModal: React.FC<AddExerciseModalProps> = ({
       clearTimeout(timer);
       const data = await response.json();
       if (response.ok && Array.isArray(data.exercises) && data.exercises.length > 0) {
-        onBulkAddExercises(formatServerExercises(data.exercises, fallbackCourseName));
+        onBulkAddExercises(
+          formatServerExercises(data.exercises, fallbackCourseName),
+          importMode
+        );
         setRawPasteText('');
         setPasteCourse('');
         setIsParsing(false);
@@ -361,7 +371,7 @@ export const AddExerciseModal: React.FC<AddExerciseModalProps> = ({
       fallbackCourseName
     );
     if (localExtracted.length > 0) {
-      onBulkAddExercises(localExtracted);
+      onBulkAddExercises(localExtracted, importMode);
       setRawPasteText('');
       setPasteCourse('');
       setIsParsing(false);
@@ -375,22 +385,22 @@ export const AddExerciseModal: React.FC<AddExerciseModalProps> = ({
 
   return (
     <div
-      className="animate-eq-fade-in fixed inset-0 z-50 flex items-center justify-center bg-slate-950/40 p-4 backdrop-blur-xs"
+      className="animate-eq-fade-in fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 dark:bg-slate-950/75 p-4 backdrop-blur-xs"
       role="dialog"
       aria-modal="true"
       aria-labelledby="add-exercise-modal-title"
     >
-      <div className="animate-eq-modal w-full max-w-lg rounded-2xl border border-slate-200/80 bg-white shadow-2xl overflow-hidden">
+      <div className="animate-eq-modal w-full max-w-lg rounded-2xl border border-slate-200/80 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-2xl overflow-hidden transition-colors">
         {/* Minimalist Header */}
         <div className="flex items-center justify-between px-6 pt-6 pb-4">
           <div>
             <h2
               id="add-exercise-modal-title"
-              className="text-base font-semibold tracking-tight text-slate-900"
+              className="text-base font-semibold tracking-tight text-slate-900 dark:text-slate-100"
             >
               Add Exercises
             </h2>
-            <p className="mt-0.5 text-xs text-slate-500">
+            <p className="mt-0.5 text-xs text-slate-500 dark:text-slate-400">
               Upload an assignment file, enter a single item, or paste text.
             </p>
           </div>
@@ -398,7 +408,7 @@ export const AddExerciseModal: React.FC<AddExerciseModalProps> = ({
             type="button"
             onClick={onClose}
             aria-label="Close modal"
-            className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700 transition-colors"
+            className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-slate-700 dark:hover:text-slate-200 transition-colors"
           >
             <X className="h-4 w-4" />
           </button>
@@ -406,7 +416,7 @@ export const AddExerciseModal: React.FC<AddExerciseModalProps> = ({
 
         {/* Segmented Mode Switcher */}
         <div className="px-6 pb-2">
-          <div className="inline-flex rounded-lg bg-slate-100 p-1">
+          <div className="inline-flex rounded-lg bg-slate-100 dark:bg-slate-800/80 p-1">
             {(
               [
                 { id: 'file', label: 'Upload File', icon: Upload },
@@ -426,8 +436,8 @@ export const AddExerciseModal: React.FC<AddExerciseModalProps> = ({
                   }}
                   className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-all duration-200 whitespace-nowrap shrink-0 ${
                     isActive
-                      ? 'bg-white text-slate-900 shadow-2xs scale-[1.01]'
-                      : 'text-slate-600 hover:text-slate-900'
+                      ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 shadow-2xs scale-[1.01]'
+                      : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
                   }`}
                 >
                   <Icon className="h-3.5 w-3.5" />
@@ -441,7 +451,7 @@ export const AddExerciseModal: React.FC<AddExerciseModalProps> = ({
         {errorMsg && (
           <div
             role="alert"
-            className="animate-eq-fade-up mx-6 mt-3 rounded-lg border border-red-200 bg-red-50 px-3.5 py-2 text-xs font-medium text-red-700"
+            className="animate-eq-fade-up mx-6 mt-3 rounded-lg border border-red-200 dark:border-red-900/60 bg-red-50 dark:bg-red-950/40 px-3.5 py-2 text-xs font-medium text-red-700 dark:text-red-300"
           >
             {errorMsg}
           </div>
@@ -455,7 +465,7 @@ export const AddExerciseModal: React.FC<AddExerciseModalProps> = ({
             <div>
               <label
                 htmlFor="file-course-input"
-                className="block text-xs font-medium text-slate-700 mb-1"
+                className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1"
               >
                 Course Name (optional)
               </label>
@@ -465,14 +475,14 @@ export const AddExerciseModal: React.FC<AddExerciseModalProps> = ({
                 value={fileCourse}
                 onChange={(e) => setFileCourse(e.target.value)}
                 placeholder="Course name for uploaded exercises"
-                className="w-full rounded-lg border border-slate-200 bg-slate-50/50 px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400 focus:border-slate-900 focus:bg-white focus:outline-none transition-colors"
+                className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50/50 dark:bg-slate-950/60 px-3 py-2 text-sm text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 focus:border-slate-900 dark:focus:border-slate-400 focus:bg-white dark:focus:bg-slate-950 focus:outline-none transition-colors"
               />
             </div>
 
             <div>
               <label
                 htmlFor="exercise-file-upload"
-                className="block text-xs font-medium text-slate-700 mb-1.5"
+                className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1.5"
               >
                 Assignment File *
               </label>
@@ -489,8 +499,8 @@ export const AddExerciseModal: React.FC<AddExerciseModalProps> = ({
                 }}
                 className={`flex flex-col items-center justify-center rounded-xl border border-dashed px-6 py-8 text-center cursor-pointer transition-all duration-200 ${
                   selectedFile
-                    ? 'border-teal-600/60 bg-teal-50/20'
-                    : 'border-slate-300 bg-slate-50/50 hover:border-slate-400 hover:bg-slate-50'
+                    ? 'border-teal-600/60 dark:border-teal-500/60 bg-teal-50/20 dark:bg-teal-950/20'
+                    : 'border-slate-300 dark:border-slate-700 bg-slate-50/50 dark:bg-slate-950/40 hover:border-slate-400 dark:hover:border-slate-600 hover:bg-slate-50 dark:hover:bg-slate-950/70'
                 }`}
               >
                 <input
@@ -499,33 +509,36 @@ export const AddExerciseModal: React.FC<AddExerciseModalProps> = ({
                   data-testid="exercise-file-input"
                   type="file"
                   accept=".pdf,.csv,.json,.txt,.md,image/png,image/jpeg,image/webp"
+                  onClick={(e) => {
+                    (e.currentTarget as HTMLInputElement).value = '';
+                  }}
                   onChange={handleFileChange}
                   className="sr-only"
                 />
                 {selectedFile ? (
                   <div className="animate-eq-fade-up flex flex-col items-center">
-                    <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-teal-700 text-white">
+                    <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-teal-700 dark:bg-teal-600 text-white">
                       <Check className="h-4 w-4" />
                     </div>
                     <p
                       data-testid="selected-file-name"
-                      className="mt-2.5 text-xs font-semibold text-slate-900"
+                      className="mt-2.5 text-xs font-semibold text-slate-900 dark:text-slate-100"
                     >
                       {selectedFile.name}
                     </p>
-                    <p className="mt-0.5 text-[11px] font-mono tabular-nums text-slate-500">
+                    <p className="mt-0.5 text-[11px] font-mono tabular-nums text-slate-500 dark:text-slate-400">
                       {(selectedFile.size / 1024).toFixed(1)} KB · Click to replace
                     </p>
                   </div>
                 ) : (
                   <>
-                    <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-slate-200/70 text-slate-600">
+                    <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-slate-200/70 dark:bg-slate-800 text-slate-600 dark:text-slate-300">
                       <FileUp className="h-4 w-4" />
                     </div>
-                    <p className="mt-2.5 text-xs font-medium text-slate-900">
+                    <p className="mt-2.5 text-xs font-medium text-slate-900 dark:text-slate-100">
                       Click to select a file or drag and drop
                     </p>
-                    <p className="mt-1 text-[11px] text-slate-500">
+                    <p className="mt-1 text-[11px] text-slate-500 dark:text-slate-400">
                       Supports PDF, CSV, JSON, TXT, Markdown, or Image (.png, .jpg)
                     </p>
                   </>
@@ -533,18 +546,50 @@ export const AddExerciseModal: React.FC<AddExerciseModalProps> = ({
               </div>
             </div>
 
-            <div className="flex items-center justify-end gap-2.5 border-t border-slate-100 pt-4">
+            {existingCount > 0 && (
+              <div className="flex items-center justify-between gap-3 rounded-xl border border-slate-200/80 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-950/50 px-3.5 py-2.5">
+                <span className="text-xs font-medium text-slate-600 dark:text-slate-300">
+                  Existing exercises ({existingCount})
+                </span>
+                <div className="inline-flex rounded-lg bg-slate-200/70 dark:bg-slate-800 p-0.5">
+                  <button
+                    type="button"
+                    onClick={() => setImportMode('merge')}
+                    className={`rounded-md px-2.5 py-1 text-[11px] font-medium transition-all whitespace-nowrap shrink-0 ${
+                      importMode === 'merge'
+                        ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 shadow-2xs'
+                        : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+                    }`}
+                  >
+                    Merge & Refresh
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setImportMode('replace')}
+                    className={`rounded-md px-2.5 py-1 text-[11px] font-medium transition-all whitespace-nowrap shrink-0 ${
+                      importMode === 'replace'
+                        ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 shadow-2xs'
+                        : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+                    }`}
+                  >
+                    Replace List
+                  </button>
+                </div>
+              </div>
+            )}
+
+            <div className="flex items-center justify-end gap-2.5 border-t border-slate-100 dark:border-slate-800 pt-4">
               <button
                 type="button"
                 onClick={onClose}
-                className="rounded-lg px-4 py-2 text-xs font-medium text-slate-600 hover:bg-slate-100 transition-colors whitespace-nowrap shrink-0"
+                className="rounded-lg px-4 py-2 text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors whitespace-nowrap shrink-0"
               >
                 Cancel
               </button>
               <button
                 type="submit"
                 disabled={isUploadingFile}
-                className="flex items-center gap-1.5 rounded-lg bg-slate-900 px-4 py-2 text-xs font-medium text-white hover:bg-slate-800 active:scale-[0.98] disabled:opacity-50 transition-all duration-150 whitespace-nowrap shrink-0"
+                className="flex items-center gap-1.5 rounded-lg bg-slate-900 dark:bg-slate-100 px-4 py-2 text-xs font-medium text-white dark:text-slate-900 hover:bg-slate-800 dark:hover:bg-slate-200 active:scale-[0.98] disabled:opacity-50 transition-all duration-150 whitespace-nowrap shrink-0"
               >
                 <Upload className="h-3.5 w-3.5" />
                 {isUploadingFile ? 'Importing File...' : 'Import from File'}
@@ -561,7 +606,7 @@ export const AddExerciseModal: React.FC<AddExerciseModalProps> = ({
             <div>
               <label
                 htmlFor="ex-title-input"
-                className="block text-xs font-medium text-slate-700 mb-1"
+                className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1"
               >
                 Exercise Title *
               </label>
@@ -571,7 +616,7 @@ export const AddExerciseModal: React.FC<AddExerciseModalProps> = ({
                 value={title}
                 onChange={(e) => setTitle(e.target.value)}
                 placeholder="Enter exercise title"
-                className="w-full rounded-lg border border-slate-200 bg-slate-50/50 px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400 focus:border-slate-900 focus:bg-white focus:outline-none transition-colors"
+                className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50/50 dark:bg-slate-950/60 px-3 py-2 text-sm text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 focus:border-slate-900 dark:focus:border-slate-400 focus:bg-white dark:focus:bg-slate-950 focus:outline-none transition-colors"
               />
             </div>
 
@@ -579,7 +624,7 @@ export const AddExerciseModal: React.FC<AddExerciseModalProps> = ({
               <div>
                 <label
                   htmlFor="ex-course-input"
-                  className="block text-xs font-medium text-slate-700 mb-1"
+                  className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1"
                 >
                   Course *
                 </label>
@@ -589,14 +634,14 @@ export const AddExerciseModal: React.FC<AddExerciseModalProps> = ({
                   value={course}
                   onChange={(e) => setCourse(e.target.value)}
                   placeholder="Course name or code"
-                  className="w-full rounded-lg border border-slate-200 bg-slate-50/50 px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400 focus:border-slate-900 focus:bg-white focus:outline-none transition-colors"
+                  className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50/50 dark:bg-slate-950/60 px-3 py-2 text-sm text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 focus:border-slate-900 dark:focus:border-slate-400 focus:bg-white dark:focus:bg-slate-950 focus:outline-none transition-colors"
                 />
               </div>
 
               <div>
                 <label
                   htmlFor="ex-topic-input"
-                  className="block text-xs font-medium text-slate-700 mb-1"
+                  className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1"
                 >
                   Topic
                 </label>
@@ -606,7 +651,7 @@ export const AddExerciseModal: React.FC<AddExerciseModalProps> = ({
                   value={topic}
                   onChange={(e) => setTopic(e.target.value)}
                   placeholder="Specific topic"
-                  className="w-full rounded-lg border border-slate-200 bg-slate-50/50 px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400 focus:border-slate-900 focus:bg-white focus:outline-none transition-colors"
+                  className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50/50 dark:bg-slate-950/60 px-3 py-2 text-sm text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 focus:border-slate-900 dark:focus:border-slate-400 focus:bg-white dark:focus:bg-slate-950 focus:outline-none transition-colors"
                 />
               </div>
             </div>
@@ -615,7 +660,7 @@ export const AddExerciseModal: React.FC<AddExerciseModalProps> = ({
               <div>
                 <label
                   htmlFor="ex-minutes-input"
-                  className="block text-xs font-medium text-slate-700 mb-1"
+                  className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1"
                 >
                   Minutes
                 </label>
@@ -627,14 +672,14 @@ export const AddExerciseModal: React.FC<AddExerciseModalProps> = ({
                   step={5}
                   value={estimatedMinutes}
                   onChange={(e) => setEstimatedMinutes(Number(e.target.value))}
-                  className="w-full rounded-lg border border-slate-200 bg-slate-50/50 px-3 py-2 text-sm font-mono tabular-nums text-slate-900 focus:border-slate-900 focus:bg-white focus:outline-none"
+                  className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50/50 dark:bg-slate-950/60 px-3 py-2 text-sm font-mono tabular-nums text-slate-900 dark:text-slate-100 focus:border-slate-900 dark:focus:border-slate-400 focus:bg-white dark:focus:bg-slate-950 focus:outline-none"
                 />
               </div>
 
               <div>
                 <label
                   htmlFor="ex-complexity-select"
-                  className="block text-xs font-medium text-slate-700 mb-1"
+                  className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1"
                 >
                   Complexity
                 </label>
@@ -642,7 +687,7 @@ export const AddExerciseModal: React.FC<AddExerciseModalProps> = ({
                   id="ex-complexity-select"
                   value={complexity}
                   onChange={(e) => setComplexity(Number(e.target.value) as ComplexityLevel)}
-                  className="w-full rounded-lg border border-slate-200 bg-slate-50/50 px-2.5 py-2 text-sm text-slate-900 focus:border-slate-900 focus:bg-white focus:outline-none"
+                  className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50/50 dark:bg-slate-950/60 px-2.5 py-2 text-sm text-slate-900 dark:text-slate-100 focus:border-slate-900 dark:focus:border-slate-400 focus:bg-white dark:focus:bg-slate-950 focus:outline-none"
                 >
                   <option value={1}>1 / 5</option>
                   <option value={2}>2 / 5</option>
@@ -655,7 +700,7 @@ export const AddExerciseModal: React.FC<AddExerciseModalProps> = ({
               <div>
                 <label
                   htmlFor="ex-relevance-select"
-                  className="block text-xs font-medium text-slate-700 mb-1"
+                  className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1"
                 >
                   Exam Weight
                 </label>
@@ -663,7 +708,7 @@ export const AddExerciseModal: React.FC<AddExerciseModalProps> = ({
                   id="ex-relevance-select"
                   value={examRelevance}
                   onChange={(e) => setExamRelevance(e.target.value as ExamRelevance)}
-                  className="w-full rounded-lg border border-slate-200 bg-slate-50/50 px-2.5 py-2 text-sm text-slate-900 focus:border-slate-900 focus:bg-white focus:outline-none"
+                  className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50/50 dark:bg-slate-950/60 px-2.5 py-2 text-sm text-slate-900 dark:text-slate-100 focus:border-slate-900 dark:focus:border-slate-400 focus:bg-white dark:focus:bg-slate-950 focus:outline-none"
                 >
                   <option value="Critical">Critical</option>
                   <option value="High">High</option>
@@ -675,7 +720,7 @@ export const AddExerciseModal: React.FC<AddExerciseModalProps> = ({
               <div>
                 <label
                   htmlFor="ex-type-select"
-                  className="block text-xs font-medium text-slate-700 mb-1"
+                  className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1"
                 >
                   Format
                 </label>
@@ -683,7 +728,7 @@ export const AddExerciseModal: React.FC<AddExerciseModalProps> = ({
                   id="ex-type-select"
                   value={exerciseType}
                   onChange={(e) => setExerciseType(e.target.value as ExerciseType)}
-                  className="w-full rounded-lg border border-slate-200 bg-slate-50/50 px-2.5 py-2 text-sm text-slate-900 focus:border-slate-900 focus:bg-white focus:outline-none"
+                  className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50/50 dark:bg-slate-950/60 px-2.5 py-2 text-sm text-slate-900 dark:text-slate-100 focus:border-slate-900 dark:focus:border-slate-400 focus:bg-white dark:focus:bg-slate-950 focus:outline-none"
                 >
                   <option value="Proof">Proof</option>
                   <option value="Problem Set">Problem Set</option>
@@ -698,7 +743,7 @@ export const AddExerciseModal: React.FC<AddExerciseModalProps> = ({
             <div>
               <label
                 htmlFor="ex-description-input"
-                className="block text-xs font-medium text-slate-700 mb-1"
+                className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1"
               >
                 Notes (optional)
               </label>
@@ -708,21 +753,21 @@ export const AddExerciseModal: React.FC<AddExerciseModalProps> = ({
                 value={description}
                 onChange={(e) => setDescription(e.target.value)}
                 placeholder="Brief problem description or requirements"
-                className="w-full rounded-lg border border-slate-200 bg-slate-50/50 px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400 focus:border-slate-900 focus:bg-white focus:outline-none transition-colors"
+                className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50/50 dark:bg-slate-950/60 px-3 py-2 text-sm text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 focus:border-slate-900 dark:focus:border-slate-400 focus:bg-white dark:focus:bg-slate-950 focus:outline-none transition-colors"
               />
             </div>
 
-            <div className="flex items-center justify-end gap-2.5 border-t border-slate-100 pt-4">
+            <div className="flex items-center justify-end gap-2.5 border-t border-slate-100 dark:border-slate-800 pt-4">
               <button
                 type="button"
                 onClick={onClose}
-                className="rounded-lg px-4 py-2 text-xs font-medium text-slate-600 hover:bg-slate-100 transition-colors whitespace-nowrap shrink-0"
+                className="rounded-lg px-4 py-2 text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors whitespace-nowrap shrink-0"
               >
                 Cancel
               </button>
               <button
                 type="submit"
-                className="flex items-center gap-1.5 rounded-lg bg-slate-900 px-4 py-2 text-xs font-medium text-white hover:bg-slate-800 active:scale-[0.98] transition-all duration-150 whitespace-nowrap shrink-0"
+                className="flex items-center gap-1.5 rounded-lg bg-slate-900 dark:bg-slate-100 px-4 py-2 text-xs font-medium text-white dark:text-slate-900 hover:bg-slate-800 dark:hover:bg-slate-200 active:scale-[0.98] transition-all duration-150 whitespace-nowrap shrink-0"
               >
                 <Plus className="h-3.5 w-3.5" />
                 Add Exercise
@@ -739,7 +784,7 @@ export const AddExerciseModal: React.FC<AddExerciseModalProps> = ({
             <div>
               <label
                 htmlFor="paste-course-input"
-                className="block text-xs font-medium text-slate-700 mb-1"
+                className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1"
               >
                 Course Name
               </label>
@@ -749,14 +794,14 @@ export const AddExerciseModal: React.FC<AddExerciseModalProps> = ({
                 value={pasteCourse}
                 onChange={(e) => setPasteCourse(e.target.value)}
                 placeholder="Course name"
-                className="w-full rounded-lg border border-slate-200 bg-slate-50/50 px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400 focus:border-slate-900 focus:bg-white focus:outline-none transition-colors"
+                className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50/50 dark:bg-slate-950/60 px-3 py-2 text-sm text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 focus:border-slate-900 dark:focus:border-slate-400 focus:bg-white dark:focus:bg-slate-950 focus:outline-none transition-colors"
               />
             </div>
 
             <div>
               <label
                 htmlFor="paste-raw-textarea"
-                className="block text-xs font-medium text-slate-700 mb-1"
+                className="block text-xs font-medium text-slate-700 dark:text-slate-300 mb-1"
               >
                 Assignment Text *
               </label>
@@ -766,22 +811,22 @@ export const AddExerciseModal: React.FC<AddExerciseModalProps> = ({
                 value={rawPasteText}
                 onChange={(e) => setRawPasteText(e.target.value)}
                 placeholder="Paste one exercise per line..."
-                className="w-full rounded-lg border border-slate-200 bg-slate-50/50 px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400 focus:border-slate-900 focus:bg-white focus:outline-none transition-colors"
+                className="w-full rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50/50 dark:bg-slate-950/60 px-3 py-2 text-sm text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 focus:border-slate-900 dark:focus:border-slate-400 focus:bg-white dark:focus:bg-slate-950 focus:outline-none transition-colors"
               />
             </div>
 
-            <div className="flex items-center justify-end gap-2.5 border-t border-slate-100 pt-4">
+            <div className="flex items-center justify-end gap-2.5 border-t border-slate-100 dark:border-slate-800 pt-4">
               <button
                 type="button"
                 onClick={onClose}
-                className="rounded-lg px-4 py-2 text-xs font-medium text-slate-600 hover:bg-slate-100 transition-colors whitespace-nowrap shrink-0"
+                className="rounded-lg px-4 py-2 text-xs font-medium text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors whitespace-nowrap shrink-0"
               >
                 Cancel
               </button>
               <button
                 type="submit"
                 disabled={isParsing}
-                className="flex items-center gap-1.5 rounded-lg bg-slate-900 px-4 py-2 text-xs font-medium text-white hover:bg-slate-800 active:scale-[0.98] disabled:opacity-50 transition-all duration-150 whitespace-nowrap shrink-0"
+                className="flex items-center gap-1.5 rounded-lg bg-slate-900 dark:bg-slate-100 px-4 py-2 text-xs font-medium text-white dark:text-slate-900 hover:bg-slate-800 dark:hover:bg-slate-200 active:scale-[0.98] disabled:opacity-50 transition-all duration-150 whitespace-nowrap shrink-0"
               >
                 <FileText className="h-3.5 w-3.5" />
                 {isParsing ? 'Extracting...' : 'Extract & Triage'}

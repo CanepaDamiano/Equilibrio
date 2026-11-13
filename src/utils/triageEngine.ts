@@ -159,24 +159,87 @@ export function computeSafeStudyWindowMinutes(budget: StudentBudget): number {
   return Math.min(budget.availableMinutes, safeBeforeWindDown);
 }
 
+export type RawExerciseInput = Omit<
+  Exercise,
+  'id' | 'triageStatus' | 'priorityRank' | 'pedagogicalScore' | 'rationale' | 'studyTip'
+>;
+
+export type IdentifiableRawExercise = Omit<
+  Exercise,
+  'triageStatus' | 'priorityRank' | 'pedagogicalScore' | 'rationale' | 'studyTip'
+>;
+
+function buildExerciseIdentityKey(item: Pick<Exercise, 'course' | 'title'>): string {
+  const normCourse = (item.course || 'course assignment').trim().toLowerCase();
+  const normTitle = (item.title || '').trim().toLowerCase();
+  return `${normCourse}::${normTitle}`;
+}
+
+/**
+ * Merges newly imported exercises (from a file upload or pasted sheet) with existing exercises.
+ * - Deduplicates identical (course, title) entries within the incoming batch.
+ * - If an incoming exercise already exists in `existing` (e.g. re-uploading a previously uploaded file),
+ *   it replaces the stale entry (resetting `completed: false`) instead of creating duplicate rows
+ *   that would poison redundancy scoring and time-budget allocation.
+ * - If `mode === 'replace'`, replaces the entire backlog with the newly uploaded batch.
+ */
+export function mergeImportedExercises(
+  incoming: RawExerciseInput[],
+  existing: IdentifiableRawExercise[],
+  mode: 'merge' | 'replace' = 'merge',
+  idPrefix = `bulk-${Date.now()}`
+): IdentifiableRawExercise[] {
+  const seenIncomingKeys = new Set<string>();
+  const deduplicatedIncoming: IdentifiableRawExercise[] = [];
+
+  incoming.forEach((item, idx) => {
+    const key = buildExerciseIdentityKey(item);
+    if (!item.title.trim() || seenIncomingKeys.has(key)) return;
+    seenIncomingKeys.add(key);
+    deduplicatedIncoming.push({
+      ...item,
+      id: `${idPrefix}-${idx}`,
+      completed: false,
+    });
+  });
+
+  if (mode === 'replace' || existing.length === 0) {
+    return deduplicatedIncoming;
+  }
+
+  // Keep only existing exercises that are NOT being re-imported in this batch
+  const remainingExisting = existing.filter(
+    (ex) => !seenIncomingKeys.has(buildExerciseIdentityKey(ex))
+  );
+
+  return [...deduplicatedIncoming, ...remainingExisting];
+}
+
 /**
  * Runs deterministic triage across the student's exercise backlog.
  * Selects the highest-value, non-redundant subset of exercises that fits within the student's safe time budget,
  * accounting for 10-minute restorative breaks every ~50 minutes of deep work.
  */
 export function triageExercises(
-  exercises: Omit<
-    Exercise,
-    'triageStatus' | 'priorityRank' | 'pedagogicalScore' | 'rationale' | 'studyTip'
-  >[],
+  exercises: IdentifiableRawExercise[],
   budget: StudentBudget
 ): Exercise[] {
   if (exercises.length === 0) return [];
 
   const safeWindowMinutes = computeSafeStudyWindowMinutes(budget);
 
+  // Deduplicate any exact (course, title) collisions in the input list while preserving order
+  const uniqueExercises: IdentifiableRawExercise[] = [];
+  const seenKeys = new Set<string>();
+  for (const ex of exercises) {
+    const key = buildExerciseIdentityKey(ex);
+    if (seenKeys.has(key)) continue;
+    seenKeys.add(key);
+    uniqueExercises.push(ex);
+  }
+
   // Score all exercises first
-  const scored = exercises.map((ex) => {
+  const scored = uniqueExercises.map((ex) => {
     const baseScore = calculatePedagogicalScore(ex, budget);
     return {
       ...ex,
@@ -199,6 +262,7 @@ export function triageExercises(
       !normalizedTopic ||
       normalizedTopic === 'general' ||
       normalizedTopic === 'core topic' ||
+      normalizedTopic === 'core problem set' ||
       normalizedTopic === 'uploaded document';
 
     const topicKey = isGenericTopic
@@ -209,11 +273,14 @@ export function triageExercises(
     let finalScore = item.baseScore;
     let redundantWith: string | undefined = undefined;
 
-    if (existingTitle) {
+    if (
+      existingTitle &&
+      existingTitle.trim().toLowerCase() !== item.title.trim().toLowerCase()
+    ) {
       // Penalize duplicate topic if it's a drill or lower complexity
       finalScore = Math.max(15, item.baseScore - (item.exerciseType === 'Drill' ? 28 : 16));
       redundantWith = existingTitle;
-    } else {
+    } else if (!existingTitle) {
       coveredTopicMap.set(topicKey, item.title);
     }
 
@@ -231,6 +298,33 @@ export function triageExercises(
 
   return adjustedList.map((item, idx) => {
     const rank = idx + 1;
+
+    // Already-completed exercises stay selected as accomplished work without consuming remaining evening focus budget
+    if (item.completed) {
+      const status: TriageStatus = item.pedagogicalScore >= 78 || rank <= 2 ? 'Essential' : 'High-Yield';
+      const defaults = buildDefaultRationale(item, status, item.redundantWith);
+      return {
+        id: item.id,
+        title: item.title,
+        course: item.course,
+        topic: item.topic,
+        description: item.description,
+        estimatedMinutes: item.estimatedMinutes,
+        complexity: item.complexity,
+        examRelevance: item.examRelevance,
+        exerciseType: item.exerciseType,
+        dueDate: item.dueDate,
+        completed: true,
+        triageStatus: status,
+        priorityRank: rank,
+        pedagogicalScore: item.pedagogicalScore,
+        rationale: defaults.rationale,
+        studyTip: defaults.studyTip,
+        keyConcepts: item.keyConcepts,
+        redundancyNote: defaults.redundancyNote,
+      };
+    }
+
     // Account for a 10m break if adding this exercise pushes work past 45m intervals
     const projectedWork = usedStudyMinutes + item.estimatedMinutes;
     const neededBreaks = Math.floor(Math.max(0, projectedWork - 1) / 55) * 10;
@@ -243,10 +337,9 @@ export function triageExercises(
       status = item.pedagogicalScore >= 78 || rank <= 2 ? 'Essential' : 'High-Yield';
     } else if (
       usedStudyMinutes === 0 &&
-      idx === 0 &&
       safeWindowMinutes >= 20
     ) {
-      // Always select at least the #1 highest-impact exercise if the student has at least 20 mins
+      // Always select at least the #1 highest-impact incomplete exercise if the student has at least 20 mins
       usedStudyMinutes += item.estimatedMinutes;
       status = 'Essential';
     } else {
@@ -274,6 +367,124 @@ export function triageExercises(
       studyTip: defaults.studyTip,
       keyConcepts: item.keyConcepts,
       redundancyNote: defaults.redundancyNote,
+    };
+  });
+}
+
+/**
+ * Safely merges Gemini AI triage decisions into the exercise list while guaranteeing:
+ * 1. Exact ID matching with fallback to normalized title matching (if the LLM altered an ID).
+ * 2. Strict 1..N sequential priorityRank numbering with no ties or gaps.
+ * 3. Strict adherence to the student's safe study window so AI triage never overloads bedtime.
+ */
+export function mergeAiTriageDecisions(
+  exercises: Exercise[],
+  decisions: any[],
+  budget: StudentBudget
+): Exercise[] {
+  if (!Array.isArray(decisions) || decisions.length === 0 || exercises.length === 0) {
+    return triageExercises(exercises, budget);
+  }
+
+  const byId = new Map<string, any>();
+  const byTitle = new Map<string, any>();
+
+  decisions.forEach((d: any) => {
+    if (!d || typeof d !== 'object') return;
+    if (d.id) byId.set(String(d.id), d);
+    if (d.title) byTitle.set(String(d.title).trim().toLowerCase(), d);
+  });
+
+  const safeWindowMinutes = computeSafeStudyWindowMinutes(budget);
+
+  const enriched = exercises.map((ex, idx) => {
+    const dec =
+      byId.get(ex.id) ||
+      byTitle.get(ex.title.trim().toLowerCase()) ||
+      (decisions.length === exercises.length ? decisions[idx] : undefined);
+
+    if (!dec) return ex;
+
+    const validStatus: TriageStatus = [
+      'Essential',
+      'High-Yield',
+      'Optional',
+      'Defer',
+    ].includes(dec.triageStatus)
+      ? dec.triageStatus
+      : ex.triageStatus;
+
+    const score = Number(dec.pedagogicalScore);
+    const validScore =
+      !isNaN(score) && score >= 10 && score <= 99
+        ? Math.round(score)
+        : ex.pedagogicalScore;
+
+    const rank = Number(dec.priorityRank);
+    const rawRank = !isNaN(rank) && rank >= 1 ? rank : ex.priorityRank;
+
+    return {
+      ...ex,
+      triageStatus: validStatus,
+      priorityRank: rawRank,
+      pedagogicalScore: validScore,
+      rationale:
+        typeof dec.rationale === 'string' && dec.rationale.trim()
+          ? dec.rationale.trim()
+          : ex.rationale,
+      studyTip:
+        typeof dec.studyTip === 'string' && dec.studyTip.trim()
+          ? dec.studyTip.trim()
+          : ex.studyTip,
+      redundancyNote:
+        typeof dec.redundancyNote === 'string' && dec.redundancyNote.trim()
+          ? dec.redundancyNote.trim()
+          : ex.redundancyNote,
+    };
+  });
+
+  // Sort by AI priorityRank ascending, breaking ties by pedagogicalScore descending
+  enriched.sort((a, b) => {
+    if (a.priorityRank !== b.priorityRank) return a.priorityRank - b.priorityRank;
+    return b.pedagogicalScore - a.pedagogicalScore;
+  });
+
+  // Enforce budget cap so AI decisions never exceed safeWindowMinutes and normalize priorityRank 1..N
+  let usedStudyMinutes = 0;
+  return enriched.map((ex, idx) => {
+    const normalizedRank = idx + 1;
+    if (ex.completed) {
+      return { ...ex, priorityRank: normalizedRank };
+    }
+
+    const wantsSelection =
+      ex.triageStatus === 'Essential' || ex.triageStatus === 'High-Yield';
+    const projectedWork = usedStudyMinutes + ex.estimatedMinutes;
+    const neededBreaks = Math.floor(Math.max(0, projectedWork - 1) / 55) * 10;
+    const totalTimeNeeded = projectedWork + neededBreaks;
+
+    let finalStatus: TriageStatus = ex.triageStatus;
+
+    if (wantsSelection) {
+      if (totalTimeNeeded <= safeWindowMinutes) {
+        usedStudyMinutes += ex.estimatedMinutes;
+      } else if (usedStudyMinutes === 0 && safeWindowMinutes >= 20) {
+        usedStudyMinutes += ex.estimatedMinutes;
+        finalStatus = 'Essential';
+      } else {
+        finalStatus = ex.pedagogicalScore >= 68 ? 'Optional' : 'Defer';
+      }
+    } else if (usedStudyMinutes === 0 && idx === 0 && safeWindowMinutes >= 20) {
+      // Ensure at least 1 exercise is selected if the student has >= 20m available
+      usedStudyMinutes += ex.estimatedMinutes;
+      finalStatus = 'Essential';
+    }
+
+    // If status was adjusted to fit budget, ensure rationale matches if it didn't come from AI
+    return {
+      ...ex,
+      triageStatus: finalStatus,
+      priorityRank: normalizedRank,
     };
   });
 }

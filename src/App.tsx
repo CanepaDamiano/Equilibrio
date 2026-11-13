@@ -1,16 +1,19 @@
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import {
   ComplexityLevel,
   ExamRelevance,
   Exercise,
   ExerciseType,
   StudentBudget,
+  ThemeMode,
   TriageStatus,
 } from './types';
 import {
   triageExercises,
   buildStudyScheduleAndSummary,
   buildDefaultRationale,
+  mergeImportedExercises,
+  mergeAiTriageDecisions,
 } from './utils/triageEngine';
 import { AddExerciseModal } from './components/AddExerciseModal';
 import { FocusSessionModal } from './components/FocusSessionModal';
@@ -28,10 +31,14 @@ import {
   ChevronUp,
   Upload,
   SlidersHorizontal,
+  Sun,
+  Moon,
+  Monitor,
 } from 'lucide-react';
 
 const STORAGE_KEY_EXERCISES = 'equilibrio_exercises_v1';
 const STORAGE_KEY_BUDGET = 'equilibrio_budget_v1';
+const STORAGE_KEY_THEME = 'equilibrio_theme_v1';
 
 const DEFAULT_BUDGET: StudentBudget = {
   availableMinutes: 120,
@@ -96,6 +103,50 @@ function sanitizeStoredExercises(raw: unknown): Exercise[] {
 }
 
 export default function App() {
+  // Theme mode state ('light' | 'dark' | 'system')
+  const [themeMode, setThemeMode] = useState<ThemeMode>(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY_THEME);
+      if (saved === 'light' || saved === 'dark' || saved === 'system') {
+        return saved;
+      }
+    } catch {
+      // Ignore storage read errors
+    }
+    return 'system';
+  });
+
+  // Sync themeMode with document.documentElement ('dark' class) and OS media query
+  useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_KEY_THEME, themeMode);
+    } catch {
+      // Ignore storage write errors
+    }
+
+    const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
+
+    const applyTheme = () => {
+      const isDark =
+        themeMode === 'dark' || (themeMode === 'system' && mediaQuery.matches);
+      const root = document.documentElement;
+      root.classList.toggle('dark', isDark);
+      root.setAttribute('data-theme', isDark ? 'dark' : 'light');
+      root.style.colorScheme = isDark ? 'dark' : 'light';
+    };
+
+    applyTheme();
+
+    const handleSystemChange = () => {
+      if (themeMode === 'system') {
+        applyTheme();
+      }
+    };
+
+    mediaQuery.addEventListener('change', handleSystemChange);
+    return () => mediaQuery.removeEventListener('change', handleSystemChange);
+  }, [themeMode]);
+
   // Primary workspace view tab
   const [activeView, setActiveView] = useState<'exercises' | 'schedule'>('exercises');
 
@@ -189,6 +240,8 @@ export default function App() {
     string | null
   >(null);
 
+  const triageRequestIdRef = useRef(0);
+
   // Re-run local deterministic triage whenever budget parameters change
   const applyLocalTriage = (
     rawList: Omit<
@@ -201,6 +254,8 @@ export default function App() {
     >[],
     nextBudget: StudentBudget
   ) => {
+    triageRequestIdRef.current += 1;
+    setIsTriaging(false);
     const updated = triageExercises(rawList, nextBudget);
     setExercises(updated);
     setCustomAiInsight(undefined);
@@ -215,20 +270,27 @@ export default function App() {
     }
   };
 
-  // Trigger server-side Gemini AI Triage with seamless fallback to local engine
-  const handleRunAiTriage = async () => {
-    if (exercises.length === 0) return;
+  // Core AI triage runner (used both by "Re-Run AI Triage" button and automatically on file import)
+  const executeAiTriage = async (
+    targetList: Exercise[],
+    targetBudget: StudentBudget
+  ) => {
+    if (targetList.length === 0) return;
+    const requestId = ++triageRequestIdRef.current;
     setIsTriaging(true);
     try {
       const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 25000);
+      const timer = setTimeout(() => controller.abort(), 35000);
       const response = await fetch('/api/triage', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ exercises, budget }),
+        body: JSON.stringify({ exercises: targetList, budget: targetBudget }),
         signal: controller.signal,
       });
       clearTimeout(timer);
+
+      if (requestId !== triageRequestIdRef.current) return;
+
       const data = await response.json();
 
       if (
@@ -237,52 +299,37 @@ export default function App() {
         Array.isArray(data.decisions) &&
         data.decisions.length > 0
       ) {
-        const decisionMap = new Map<string, any>();
-        data.decisions.forEach((d: any) => decisionMap.set(d.id, d));
-
-        const merged = exercises
-          .map((ex) => {
-            const dec = decisionMap.get(ex.id);
-            if (!dec) return ex;
-            const validStatus: TriageStatus = [
-              'Essential',
-              'High-Yield',
-              'Optional',
-              'Defer',
-            ].includes(dec.triageStatus)
-              ? dec.triageStatus
-              : ex.triageStatus;
-            return {
-              ...ex,
-              triageStatus: validStatus,
-              priorityRank: Number(dec.priorityRank) || ex.priorityRank,
-              pedagogicalScore:
-                Number(dec.pedagogicalScore) || ex.pedagogicalScore,
-              rationale: dec.rationale || ex.rationale,
-              studyTip: dec.studyTip || ex.studyTip,
-              redundancyNote: dec.redundancyNote || ex.redundancyNote,
-            };
-          })
-          .sort((a, b) => a.priorityRank - b.priorityRank);
-
+        const merged = mergeAiTriageDecisions(
+          targetList,
+          data.decisions,
+          targetBudget
+        );
         setExercises(merged);
         if (data.aiInsight) {
           setCustomAiInsight(data.aiInsight);
         }
       } else {
-        const locallyTriaged = triageExercises(exercises, budget);
+        const locallyTriaged = triageExercises(targetList, targetBudget);
         setExercises(locallyTriaged);
         setCustomAiInsight(undefined);
       }
     } catch {
-      const locallyTriaged = triageExercises(exercises, budget);
+      if (requestId !== triageRequestIdRef.current) return;
+      const locallyTriaged = triageExercises(targetList, targetBudget);
       setExercises(locallyTriaged);
     } finally {
-      setIsTriaging(false);
+      if (requestId === triageRequestIdRef.current) {
+        setIsTriaging(false);
+      }
     }
   };
 
-  // Add single exercise
+  // Trigger server-side Gemini AI Triage with seamless fallback to local engine
+  const handleRunAiTriage = async () => {
+    await executeAiTriage(exercises, budget);
+  };
+
+  // Add single exercise (deduplicates/refreshes if same title+course already exists)
   const handleAddSingleExercise = (
     newEx: Omit<
       Exercise,
@@ -294,11 +341,17 @@ export default function App() {
       | 'studyTip'
     >
   ) => {
-    const id = `ex-${Date.now()}`;
-    const nextRaw = [{ ...newEx, id }, ...exercises];
-    const triaged = triageExercises(nextRaw, budget);
+    const prefix = `ex-${Date.now()}`;
+    const mergedRaw = mergeImportedExercises([newEx], exercises, 'merge', prefix);
+    const triaged = triageExercises(mergedRaw, budget);
     setExercises(triaged);
-    setExpandedExerciseId(id);
+    setCustomAiInsight(undefined);
+    setStatusFilter('all');
+    setSearchQuery('');
+    setActiveView('exercises');
+    if (mergedRaw.length > 0) {
+      setExpandedExerciseId(mergedRaw[0].id);
+    }
   };
 
   // Bulk add exercises from uploaded file or pasted sheet
@@ -311,17 +364,26 @@ export default function App() {
       | 'pedagogicalScore'
       | 'rationale'
       | 'studyTip'
-    >[]
+    >[],
+    importMode: 'merge' | 'replace' = 'merge'
   ) => {
-    const withIds = newItems.map((item, idx) => ({
-      ...item,
-      id: `bulk-${Date.now()}-${idx}`,
-    }));
-    const nextRaw = [...withIds, ...exercises];
-    const triaged = triageExercises(nextRaw, budget);
+    triageRequestIdRef.current += 1;
+    setIsTriaging(false);
+    const prefix = `bulk-${Date.now()}`;
+    const mergedRaw = mergeImportedExercises(
+      newItems,
+      exercises,
+      importMode,
+      prefix
+    );
+    const triaged = triageExercises(mergedRaw, budget);
     setExercises(triaged);
-    if (withIds.length > 0) {
-      setExpandedExerciseId(withIds[0].id);
+    setCustomAiInsight(undefined);
+    setStatusFilter('all');
+    setSearchQuery('');
+    setActiveView('exercises');
+    if (triaged.length > 0) {
+      setExpandedExerciseId(triaged[0].id);
     }
   };
 
@@ -367,6 +429,8 @@ export default function App() {
 
   // Delete exercise
   const handleDeleteExercise = (id: string) => {
+    triageRequestIdRef.current += 1;
+    setIsTriaging(false);
     const remaining = exercises.filter((e) => e.id !== id);
     const retriaged = triageExercises(remaining, budget);
     setExercises(retriaged);
@@ -374,9 +438,13 @@ export default function App() {
 
   // Clear all exercises
   const handleClearAll = () => {
+    triageRequestIdRef.current += 1;
+    setIsTriaging(false);
     setExercises([]);
     setCustomAiInsight(undefined);
     setExpandedExerciseId(null);
+    setStatusFilter('all');
+    setSearchQuery('');
   };
 
   // Compute live schedule & summary
@@ -426,29 +494,35 @@ export default function App() {
     return `${h}h ${m}m`;
   };
 
+  const themeOptions: { id: ThemeMode; label: string; icon: typeof Sun }[] = [
+    { id: 'light', label: 'Light', icon: Sun },
+    { id: 'dark', label: 'Dark', icon: Moon },
+    { id: 'system', label: 'System', icon: Monitor },
+  ];
+
   return (
-    <div id="top" className="min-h-screen flex flex-col bg-[#FAFAFA] text-slate-900">
+    <div id="top" className="min-h-screen flex flex-col bg-[#FAFAFA] dark:bg-[#090D16] text-slate-900 dark:text-slate-100 transition-colors duration-200">
       {/* Minimalist Top Bar */}
-      <header className="sticky top-0 z-30 border-b border-slate-200/70 bg-[#FAFAFA]/90 backdrop-blur-md">
-        <div className="mx-auto flex max-w-[920px] items-center justify-between px-6 py-3.5">
+      <header className="sticky top-0 z-30 border-b border-slate-200/70 dark:border-slate-800/80 bg-[#FAFAFA]/90 dark:bg-[#090D16]/90 backdrop-blur-md transition-colors duration-200">
+        <div className="mx-auto flex max-w-[920px] items-center justify-between gap-4 px-6 py-3.5">
           <a
             href="#top"
-            className="text-base font-semibold tracking-tight text-slate-900"
+            className="text-base font-semibold tracking-tight text-slate-900 dark:text-slate-100 shrink-0"
           >
             Equilibrio
           </a>
 
           <nav
             aria-label="Primary Navigation"
-            className="hidden sm:flex items-center gap-6 text-xs font-medium text-slate-500"
+            className="hidden md:flex items-center gap-5 text-xs font-medium text-slate-500 dark:text-slate-400"
           >
             <a
               href="#workspace"
               onClick={() => setActiveView('exercises')}
               className={`transition-colors whitespace-nowrap shrink-0 ${
                 activeView === 'exercises'
-                  ? 'text-slate-900 font-semibold'
-                  : 'hover:text-slate-900'
+                  ? 'text-slate-900 dark:text-slate-100 font-semibold'
+                  : 'hover:text-slate-900 dark:hover:text-slate-100'
               }`}
             >
               Exercises
@@ -458,8 +532,8 @@ export default function App() {
               onClick={() => setActiveView('schedule')}
               className={`transition-colors whitespace-nowrap shrink-0 ${
                 activeView === 'schedule'
-                  ? 'text-slate-900 font-semibold'
-                  : 'hover:text-slate-900'
+                  ? 'text-slate-900 dark:text-slate-100 font-semibold'
+                  : 'hover:text-slate-900 dark:hover:text-slate-100'
               }`}
             >
               Evening Schedule
@@ -467,32 +541,64 @@ export default function App() {
             <a
               href="#budget-bar"
               onClick={() => setIsBudgetTuneOpen(true)}
-              className="hover:text-slate-900 transition-colors whitespace-nowrap shrink-0"
+              className="hover:text-slate-900 dark:hover:text-slate-100 transition-colors whitespace-nowrap shrink-0"
             >
               Study Parameters
             </a>
             <a
               href="#overview"
-              className="hover:text-slate-900 transition-colors whitespace-nowrap shrink-0"
+              className="hover:text-slate-900 dark:hover:text-slate-100 transition-colors whitespace-nowrap shrink-0"
             >
               Overview
             </a>
           </nav>
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 shrink-0">
+            {/* Segmented Theme Switcher (Light / Dark / System) */}
+            <div
+              role="group"
+              aria-label="Theme mode"
+              data-testid="theme-switcher"
+              className="inline-flex items-center rounded-lg border border-slate-200/80 dark:border-slate-800 bg-slate-100/80 dark:bg-slate-900 p-0.5"
+            >
+              {themeOptions.map((opt) => {
+                const Icon = opt.icon;
+                const isActive = themeMode === opt.id;
+                return (
+                  <button
+                    key={opt.id}
+                    type="button"
+                    onClick={() => setThemeMode(opt.id)}
+                    aria-label={`${opt.label} theme`}
+                    aria-pressed={isActive}
+                    title={`${opt.label} theme`}
+                    className={`flex items-center justify-center rounded-md p-1.5 text-xs font-medium transition-all duration-150 shrink-0 ${
+                      isActive
+                        ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 shadow-2xs'
+                        : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+                    }`}
+                  >
+                    <Icon className="h-3.5 w-3.5" />
+                  </button>
+                );
+              })}
+            </div>
+
             {exercises.length > 0 && (
               <button
                 type="button"
                 onClick={handleRunAiTriage}
                 disabled={isTriaging}
-                className="flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 active:scale-[0.98] disabled:opacity-50 transition-all duration-150 whitespace-nowrap shrink-0"
+                className="flex items-center gap-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 active:scale-[0.98] disabled:opacity-50 transition-all duration-150 whitespace-nowrap shrink-0"
               >
                 <Sparkles
-                  className={`h-3.5 w-3.5 text-teal-700 ${
+                  className={`h-3.5 w-3.5 text-teal-700 dark:text-teal-400 ${
                     isTriaging ? 'animate-spin' : ''
                   }`}
                 />
-                {isTriaging ? 'Evaluating...' : 'Re-Run AI Triage'}
+                <span className="hidden sm:inline">
+                  {isTriaging ? 'Evaluating...' : 'Re-Run AI Triage'}
+                </span>
               </button>
             )}
             <button
@@ -501,7 +607,7 @@ export default function App() {
                 setModalInitialTab('file');
                 setIsAddModalOpen(true);
               }}
-              className="flex items-center gap-1.5 rounded-lg bg-slate-900 px-3.5 py-1.5 text-xs font-medium text-white hover:bg-slate-800 active:scale-[0.98] transition-all duration-150 whitespace-nowrap shrink-0"
+              className="flex items-center gap-1.5 rounded-lg bg-slate-900 dark:bg-slate-100 px-3.5 py-1.5 text-xs font-medium text-white dark:text-slate-900 hover:bg-slate-800 dark:hover:bg-slate-200 active:scale-[0.98] transition-all duration-150 whitespace-nowrap shrink-0"
             >
               <Plus className="h-3.5 w-3.5" />
               Add Exercises
@@ -515,10 +621,10 @@ export default function App() {
         <div className="mx-auto max-w-[920px] px-6 py-8 space-y-6">
           {/* Clean Title Header */}
           <div id="overview" className="animate-eq-fade-up space-y-1">
-            <h1 className="text-2xl font-semibold tracking-tight text-slate-900">
+            <h1 className="text-2xl font-semibold tracking-tight text-slate-900 dark:text-slate-100">
               Focus on high-impact exercises. Sleep on time.
             </h1>
-            <p className="text-sm text-slate-500">
+            <p className="text-sm text-slate-500 dark:text-slate-400">
               AI prioritizes your university problem sets around your evening rest budget.
             </p>
           </div>
@@ -528,7 +634,7 @@ export default function App() {
             id="budget-bar"
             aria-label="Study-Rest Budget Controls"
             style={{ animationDelay: '40ms' }}
-            className="animate-eq-fade-up rounded-2xl border border-slate-200/80 bg-white p-5 space-y-4 transition-shadow duration-200"
+            className="animate-eq-fade-up rounded-2xl border border-slate-200/80 dark:border-slate-800 bg-white dark:bg-slate-900 p-5 space-y-4 transition-colors duration-200"
           >
             <div className="flex flex-col gap-5 sm:flex-row sm:items-center sm:justify-between">
               {/* Time Budget Slider */}
@@ -536,11 +642,11 @@ export default function App() {
                 <div className="flex items-center justify-between">
                   <label
                     htmlFor="available-minutes-slider"
-                    className="text-xs font-medium text-slate-600"
+                    className="text-xs font-medium text-slate-600 dark:text-slate-300"
                   >
                     Available Focus Time
                   </label>
-                  <span className="text-xs font-mono tabular-nums font-semibold text-slate-900">
+                  <span className="text-xs font-mono tabular-nums font-semibold text-slate-900 dark:text-slate-100">
                     {formatHoursMins(budget.availableMinutes)} ({budget.availableMinutes}m)
                   </span>
                 </div>
@@ -556,16 +662,16 @@ export default function App() {
                       availableMinutes: Number(e.target.value),
                     })
                   }
-                  className="h-1.5 w-full cursor-pointer appearance-none rounded-lg bg-slate-200 accent-slate-900"
+                  className="h-1.5 w-full cursor-pointer appearance-none rounded-lg bg-slate-200 dark:bg-slate-800 accent-slate-900 dark:accent-teal-400"
                 />
               </div>
 
               {/* Start & Target Bedtime + Tune Button */}
-              <div className="flex flex-wrap items-end gap-3 sm:pl-4 sm:border-l sm:border-slate-100">
+              <div className="flex flex-wrap items-end gap-3 sm:pl-4 sm:border-l sm:border-slate-100 dark:sm:border-slate-800">
                 <div>
                   <label
                     htmlFor="start-hour-select"
-                    className="block text-[11px] font-medium text-slate-500 mb-1"
+                    className="block text-[11px] font-medium text-slate-500 dark:text-slate-400 mb-1"
                   >
                     Start Time
                   </label>
@@ -575,7 +681,7 @@ export default function App() {
                     onChange={(e) =>
                       handleUpdateBudget({ currentHour: e.target.value })
                     }
-                    className="rounded-lg border border-slate-200 bg-slate-50/70 px-2.5 py-1.5 text-xs font-mono tabular-nums text-slate-900 focus:border-slate-900 focus:bg-white focus:outline-none"
+                    className="rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50/70 dark:bg-slate-950 px-2.5 py-1.5 text-xs font-mono tabular-nums text-slate-900 dark:text-slate-100 focus:border-slate-900 dark:focus:border-slate-400 focus:bg-white dark:focus:bg-slate-900 focus:outline-none"
                   >
                     <option value="18:30">18:30</option>
                     <option value="19:00">19:00</option>
@@ -589,7 +695,7 @@ export default function App() {
                 <div>
                   <label
                     htmlFor="bedtime-select"
-                    className="block text-[11px] font-medium text-slate-500 mb-1"
+                    className="block text-[11px] font-medium text-slate-500 dark:text-slate-400 mb-1"
                   >
                     Target Bedtime
                   </label>
@@ -599,7 +705,7 @@ export default function App() {
                     onChange={(e) =>
                       handleUpdateBudget({ targetBedtime: e.target.value })
                     }
-                    className="rounded-lg border border-slate-200 bg-slate-50/70 px-2.5 py-1.5 text-xs font-mono tabular-nums text-slate-900 focus:border-slate-900 focus:bg-white focus:outline-none"
+                    className="rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50/70 dark:bg-slate-950 px-2.5 py-1.5 text-xs font-mono tabular-nums text-slate-900 dark:text-slate-100 focus:border-slate-900 dark:focus:border-slate-400 focus:bg-white dark:focus:bg-slate-900 focus:outline-none"
                   >
                     <option value="22:00">22:00</option>
                     <option value="22:30">22:30</option>
@@ -615,8 +721,8 @@ export default function App() {
                   aria-expanded={isBudgetTuneOpen}
                   className={`flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium active:scale-[0.97] transition-all duration-150 whitespace-nowrap shrink-0 ${
                     isBudgetTuneOpen
-                      ? 'border-slate-900 bg-slate-900 text-white'
-                      : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
+                      ? 'border-slate-900 dark:border-slate-100 bg-slate-900 dark:bg-slate-100 text-white dark:text-slate-900'
+                      : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700'
                   }`}
                 >
                   <SlidersHorizontal className="h-3.5 w-3.5" />
@@ -625,19 +731,19 @@ export default function App() {
               </div>
             </div>
 
-            {/* Collapsible Fine-Tune Drawer (Energy & Optimization Strategy) */}
+            {/* Collapsible Fine-Tune Drawer (Energy, Optimization Strategy & Appearance) */}
             <div
               className={`eq-accordion-grid ${
                 isBudgetTuneOpen ? 'eq-accordion-open' : 'eq-accordion-closed'
               }`}
             >
               <div className="eq-accordion-inner">
-                <div className="grid grid-cols-1 gap-4 border-t border-slate-100 pt-4 sm:grid-cols-2">
+                <div className="grid grid-cols-1 gap-4 border-t border-slate-100 dark:border-slate-800 pt-4 sm:grid-cols-2">
                   <div>
-                    <span className="block text-xs font-medium text-slate-600 mb-1.5">
+                    <span className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1.5">
                       Cognitive Energy Level
                     </span>
-                    <div className="grid grid-cols-3 gap-1.5 rounded-lg bg-slate-100 p-1">
+                    <div className="grid grid-cols-3 gap-1 rounded-lg bg-slate-100 dark:bg-slate-800/80 p-1">
                       {(['Fresh', 'Moderate', 'Exhausted'] as const).map((lvl) => {
                         const isActive = budget.energyLevel === lvl;
                         return (
@@ -647,8 +753,8 @@ export default function App() {
                             onClick={() => handleUpdateBudget({ energyLevel: lvl })}
                             className={`rounded-md py-1.5 text-xs font-medium transition-all duration-200 whitespace-nowrap shrink-0 ${
                               isActive
-                                ? 'bg-white text-slate-900 shadow-2xs scale-[1.01]'
-                                : 'text-slate-600 hover:text-slate-900'
+                                ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 shadow-2xs scale-[1.01]'
+                                : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
                             }`}
                           >
                             {lvl}
@@ -659,10 +765,10 @@ export default function App() {
                   </div>
 
                   <div>
-                    <span className="block text-xs font-medium text-slate-600 mb-1.5">
+                    <span className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1.5">
                       Prioritization Strategy
                     </span>
-                    <div className="grid grid-cols-3 gap-1.5 rounded-lg bg-slate-100 p-1">
+                    <div className="grid grid-cols-3 gap-1 rounded-lg bg-slate-100 dark:bg-slate-800/80 p-1">
                       {(
                         ['Balanced', 'Exam-Focused', 'Deep-Concepts'] as const
                       ).map((mode) => {
@@ -676,11 +782,38 @@ export default function App() {
                             }
                             className={`rounded-md py-1.5 text-xs font-medium transition-all duration-200 whitespace-nowrap shrink-0 ${
                               isActive
-                                ? 'bg-white text-slate-900 shadow-2xs scale-[1.01]'
-                                : 'text-slate-600 hover:text-slate-900'
+                                ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 shadow-2xs scale-[1.01]'
+                                : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
                             }`}
                           >
                             {mode}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  <div className="sm:col-span-2">
+                    <span className="block text-xs font-medium text-slate-600 dark:text-slate-300 mb-1.5">
+                      Appearance
+                    </span>
+                    <div className="grid grid-cols-3 gap-1 rounded-lg bg-slate-100 dark:bg-slate-800/80 p-1">
+                      {themeOptions.map((opt) => {
+                        const Icon = opt.icon;
+                        const isActive = themeMode === opt.id;
+                        return (
+                          <button
+                            key={opt.id}
+                            type="button"
+                            onClick={() => setThemeMode(opt.id)}
+                            className={`flex items-center justify-center gap-1.5 rounded-md py-1.5 text-xs font-medium transition-all duration-200 whitespace-nowrap shrink-0 ${
+                              isActive
+                                ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 shadow-2xs scale-[1.01]'
+                                : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+                            }`}
+                          >
+                            <Icon className="h-3.5 w-3.5" />
+                            {opt.label}
                           </button>
                         );
                       })}
@@ -691,54 +824,54 @@ export default function App() {
             </div>
 
             {/* Quiet Inline Status Strip */}
-            <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 pt-3.5 text-xs">
-              <div className="flex flex-wrap items-center gap-x-4 gap-y-1 font-mono tabular-nums text-slate-600">
+            <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 dark:border-slate-800 pt-3.5 text-xs">
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-1 font-mono tabular-nums text-slate-600 dark:text-slate-400">
                 <span>
                   Selected:{' '}
-                  <strong className="font-semibold text-slate-900">
+                  <strong className="font-semibold text-slate-900 dark:text-slate-100">
                     {summary.selectedCount}/{summary.totalExercises}
                   </strong>
                 </span>
-                <span aria-hidden="true" className="text-slate-300">
+                <span aria-hidden="true" className="text-slate-300 dark:text-slate-700">
                   ·
                 </span>
                 <span>
                   Focus:{' '}
-                  <strong className="font-semibold text-slate-900">
+                  <strong className="font-semibold text-slate-900 dark:text-slate-100">
                     {formatHoursMins(summary.selectedStudyMinutes)}
                   </strong>
                 </span>
-                <span aria-hidden="true" className="text-slate-300">
+                <span aria-hidden="true" className="text-slate-300 dark:text-slate-700">
                   ·
                 </span>
-                <span className="text-teal-700">
+                <span className="text-teal-700 dark:text-teal-400">
                   Saved:{' '}
                   <strong className="font-semibold">
                     {formatHoursMins(summary.timeSavedMinutes)}
                   </strong>
                 </span>
-                <span aria-hidden="true" className="text-slate-300">
+                <span aria-hidden="true" className="text-slate-300 dark:text-slate-700">
                   ·
                 </span>
                 <span>
                   Coverage:{' '}
-                  <strong className="font-semibold text-slate-900">
+                  <strong className="font-semibold text-slate-900 dark:text-slate-100">
                     {summary.conceptCoveragePercent}%
                   </strong>
                 </span>
               </div>
 
-              <div className="font-mono tabular-nums text-slate-500">
+              <div className="font-mono tabular-nums text-slate-500 dark:text-slate-400">
                 Finish study{' '}
-                <strong className="font-semibold text-slate-900">
+                <strong className="font-semibold text-slate-900 dark:text-slate-100">
                   {summary.projectedFinishTime}
                 </strong>{' '}
                 ·{' '}
                 <span
                   className={
                     summary.sleepProtected
-                      ? 'text-teal-700 font-medium'
-                      : 'text-amber-700 font-medium'
+                      ? 'text-teal-700 dark:text-teal-400 font-medium'
+                      : 'text-amber-700 dark:text-amber-400 font-medium'
                   }
                 >
                   {summary.sleepProtected
@@ -755,17 +888,17 @@ export default function App() {
               /* Clean Empty State */
               <div
                 style={{ animationDelay: '80ms' }}
-                className="animate-eq-fade-up rounded-2xl border border-slate-200/80 bg-white px-6 py-16 text-center"
+                className="animate-eq-fade-up rounded-2xl border border-slate-200/80 dark:border-slate-800 bg-white dark:bg-slate-900 px-6 py-16 text-center transition-colors duration-200"
               >
                 <div className="mx-auto max-w-md space-y-4">
-                  <div className="mx-auto flex h-10 w-10 items-center justify-center rounded-xl bg-slate-100 text-slate-700">
+                  <div className="mx-auto flex h-10 w-10 items-center justify-center rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300">
                     <Upload className="h-4 w-4" />
                   </div>
                   <div className="space-y-1.5">
-                    <h2 className="text-base font-semibold text-slate-900">
+                    <h2 className="text-base font-semibold text-slate-900 dark:text-slate-100">
                       Upload or add your assigned exercises
                     </h2>
-                    <p className="text-xs text-slate-500 leading-relaxed">
+                    <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
                       Import a problem sheet file (.pdf, .csv, .json, .txt, .md, or image) or enter exercises manually. Equilibrio ranks them by exam impact to protect your sleep.
                     </p>
                   </div>
@@ -776,7 +909,7 @@ export default function App() {
                         setModalInitialTab('file');
                         setIsAddModalOpen(true);
                       }}
-                      className="inline-flex items-center gap-1.5 rounded-lg bg-slate-900 px-4 py-2 text-xs font-medium text-white hover:bg-slate-800 active:scale-[0.98] transition-all duration-150 whitespace-nowrap shrink-0"
+                      className="inline-flex items-center gap-1.5 rounded-lg bg-slate-900 dark:bg-slate-100 px-4 py-2 text-xs font-medium text-white dark:text-slate-900 hover:bg-slate-800 dark:hover:bg-slate-200 active:scale-[0.98] transition-all duration-150 whitespace-nowrap shrink-0"
                     >
                       <Upload className="h-3.5 w-3.5" />
                       Upload Exercise File
@@ -787,7 +920,7 @@ export default function App() {
                         setModalInitialTab('single');
                         setIsAddModalOpen(true);
                       }}
-                      className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-4 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 active:scale-[0.98] transition-all duration-150 whitespace-nowrap shrink-0"
+                      className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-4 py-2 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 active:scale-[0.98] transition-all duration-150 whitespace-nowrap shrink-0"
                     >
                       <Plus className="h-3.5 w-3.5" />
                       Add Manually
@@ -801,7 +934,7 @@ export default function App() {
                 <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                   {/* View Switcher: Priority List vs Evening Schedule */}
                   <div className="flex flex-wrap items-center gap-2">
-                    <div className="inline-flex rounded-lg bg-slate-200/70 p-1">
+                    <div className="inline-flex rounded-lg bg-slate-200/70 dark:bg-slate-800/80 p-1">
                       {(
                         [
                           {
@@ -822,8 +955,8 @@ export default function App() {
                             onClick={() => setActiveView(tab.id)}
                             className={`rounded-md px-3 py-1.5 text-xs font-medium transition-all duration-200 whitespace-nowrap shrink-0 ${
                               isActive
-                                ? 'bg-white text-slate-900 shadow-2xs scale-[1.01]'
-                                : 'text-slate-600 hover:text-slate-900'
+                                ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 shadow-2xs scale-[1.01]'
+                                : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
                             }`}
                           >
                             {tab.label}
@@ -833,14 +966,14 @@ export default function App() {
                     </div>
 
                     {activeView === 'exercises' && (
-                      <div className="flex items-center gap-1 text-xs text-slate-500 pl-1">
+                      <div className="flex items-center gap-1 text-xs text-slate-500 dark:text-slate-400 pl-1">
                         <button
                           type="button"
                           onClick={() => setStatusFilter('all')}
                           className={`rounded-md px-2 py-1 transition-colors whitespace-nowrap shrink-0 ${
                             statusFilter === 'all'
-                              ? 'font-semibold text-slate-900 underline underline-offset-4'
-                              : 'hover:text-slate-900'
+                              ? 'font-semibold text-slate-900 dark:text-slate-100 underline underline-offset-4'
+                              : 'hover:text-slate-900 dark:hover:text-slate-200'
                           }`}
                         >
                           All ({exercises.length})
@@ -851,8 +984,8 @@ export default function App() {
                           onClick={() => setStatusFilter('selected')}
                           className={`rounded-md px-2 py-1 transition-colors whitespace-nowrap shrink-0 ${
                             statusFilter === 'selected'
-                              ? 'font-semibold text-teal-800 underline underline-offset-4'
-                              : 'hover:text-slate-900'
+                              ? 'font-semibold text-teal-800 dark:text-teal-400 underline underline-offset-4'
+                              : 'hover:text-slate-900 dark:hover:text-slate-200'
                           }`}
                         >
                           Selected ({summary.selectedCount})
@@ -863,8 +996,8 @@ export default function App() {
                           onClick={() => setStatusFilter('deferred')}
                           className={`rounded-md px-2 py-1 transition-colors whitespace-nowrap shrink-0 ${
                             statusFilter === 'deferred'
-                              ? 'font-semibold text-slate-900 underline underline-offset-4'
-                              : 'hover:text-slate-900'
+                              ? 'font-semibold text-slate-900 dark:text-slate-100 underline underline-offset-4'
+                              : 'hover:text-slate-900 dark:hover:text-slate-200'
                           }`}
                         >
                           Deferred ({summary.deferredCount})
@@ -882,7 +1015,7 @@ export default function App() {
                         value={searchQuery}
                         onChange={(e) => setSearchQuery(e.target.value)}
                         placeholder="Search..."
-                        className="w-36 sm:w-44 rounded-lg border border-slate-200/80 bg-white px-3 py-1.5 text-xs text-slate-900 placeholder:text-slate-400 focus:border-slate-900 focus:outline-none transition-colors"
+                        className="w-36 sm:w-44 rounded-lg border border-slate-200/80 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-1.5 text-xs text-slate-900 dark:text-slate-100 placeholder:text-slate-400 dark:placeholder:text-slate-500 focus:border-slate-900 dark:focus:border-slate-400 focus:outline-none transition-colors"
                       />
                     )}
                     <button
@@ -891,7 +1024,7 @@ export default function App() {
                         setModalInitialTab('file');
                         setIsAddModalOpen(true);
                       }}
-                      className="flex items-center gap-1.5 rounded-lg border border-slate-200/80 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 active:scale-[0.98] transition-all duration-150 whitespace-nowrap shrink-0"
+                      className="flex items-center gap-1.5 rounded-lg border border-slate-200/80 dark:border-slate-700 bg-white dark:bg-slate-900 px-3 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 active:scale-[0.98] transition-all duration-150 whitespace-nowrap shrink-0"
                     >
                       <Upload className="h-3.5 w-3.5" />
                       Upload File
@@ -899,7 +1032,7 @@ export default function App() {
                     <button
                       type="button"
                       onClick={handleClearAll}
-                      className="rounded-lg border border-slate-200/80 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-500 hover:bg-red-50 hover:text-red-600 active:scale-[0.98] transition-all duration-150 whitespace-nowrap shrink-0"
+                      className="rounded-lg border border-slate-200/80 dark:border-slate-700 bg-white dark:bg-slate-900 px-2.5 py-1.5 text-xs font-medium text-slate-500 dark:text-slate-400 hover:bg-red-50 dark:hover:bg-red-950/40 hover:text-red-600 dark:hover:text-red-400 active:scale-[0.98] transition-all duration-150 whitespace-nowrap shrink-0"
                     >
                       Clear All
                     </button>
@@ -918,13 +1051,13 @@ export default function App() {
                 ) : (
                   <div className="animate-eq-fade-up space-y-3">
                     {/* Quiet AI Synthesis Line */}
-                    <p className="px-1 text-xs text-slate-500">
+                    <p className="px-1 text-xs text-slate-500 dark:text-slate-400">
                       {summary.aiInsight}
                     </p>
 
                     {filteredExercises.length === 0 ? (
-                      <div className="animate-eq-fade-up rounded-2xl border border-slate-200/80 bg-white p-10 text-center space-y-3">
-                        <p className="text-xs text-slate-500">
+                      <div className="animate-eq-fade-up rounded-2xl border border-slate-200/80 dark:border-slate-800 bg-white dark:bg-slate-900 p-10 text-center space-y-3">
+                        <p className="text-xs text-slate-500 dark:text-slate-400">
                           No exercises match your current filter or search query.
                         </p>
                         <button
@@ -933,13 +1066,13 @@ export default function App() {
                             setStatusFilter('all');
                             setSearchQuery('');
                           }}
-                          className="inline-flex items-center rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 transition-colors"
+                          className="inline-flex items-center rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors"
                         >
                           Reset Filters
                         </button>
                       </div>
                     ) : (
-                      <div className="divide-y divide-slate-100 rounded-2xl border border-slate-200/80 bg-white overflow-hidden">
+                      <div className="divide-y divide-slate-100 dark:divide-slate-800/80 rounded-2xl border border-slate-200/80 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-hidden transition-colors duration-200">
                         {filteredExercises.map((ex, index) => {
                           const isSelectedTonight =
                             ex.triageStatus === 'Essential' ||
@@ -953,10 +1086,10 @@ export default function App() {
                               data-testid={`exercise-card-${ex.id}`}
                               className={`animate-eq-fade-up p-5 transition-colors duration-200 ${
                                 ex.completed
-                                  ? 'bg-slate-50/60 opacity-65'
+                                  ? 'bg-slate-50/60 dark:bg-slate-950/60 opacity-65'
                                   : !isSelectedTonight
-                                  ? 'bg-slate-50/30'
-                                  : 'hover:bg-slate-50/40'
+                                  ? 'bg-slate-50/30 dark:bg-slate-950/30'
+                                  : 'hover:bg-slate-50/40 dark:hover:bg-slate-800/40'
                               }`}
                             >
                               <div className="flex items-start justify-between gap-4">
@@ -967,36 +1100,36 @@ export default function App() {
                                     aria-label={`Mark "${ex.title}" as ${
                                       ex.completed ? 'incomplete' : 'completed'
                                     }`}
-                                    className="mt-0.5 text-slate-400 hover:text-slate-900 active:scale-90 transition-all duration-150 shrink-0"
+                                    className="mt-0.5 text-slate-400 hover:text-slate-900 dark:hover:text-slate-100 active:scale-90 transition-all duration-150 shrink-0"
                                   >
                                     {ex.completed ? (
-                                      <CheckCircle2 className="h-4 w-4 text-teal-700" />
+                                      <CheckCircle2 className="h-4 w-4 text-teal-700 dark:text-teal-400" />
                                     ) : (
                                       <Circle className="h-4 w-4" />
                                     )}
                                   </button>
 
                                   <div translate="no" className="notranslate min-w-0 space-y-1">
-                                    <div className="flex flex-wrap items-center gap-1.5 text-xs text-slate-500">
-                                      <span className="font-mono tabular-nums font-semibold text-slate-900">
+                                    <div className="flex flex-wrap items-center gap-1.5 text-xs text-slate-500 dark:text-slate-400">
+                                      <span className="font-mono tabular-nums font-semibold text-slate-900 dark:text-slate-100">
                                         #{ex.priorityRank}
                                       </span>
                                       <span aria-hidden="true">·</span>
                                       <span
                                         className={`font-semibold ${
                                           ex.triageStatus === 'Essential'
-                                            ? 'text-teal-700'
+                                            ? 'text-teal-700 dark:text-teal-400'
                                             : ex.triageStatus === 'High-Yield'
-                                            ? 'text-emerald-700'
+                                            ? 'text-emerald-700 dark:text-emerald-400'
                                             : ex.triageStatus === 'Optional'
-                                            ? 'text-amber-700'
-                                            : 'text-slate-400'
+                                            ? 'text-amber-700 dark:text-amber-400'
+                                            : 'text-slate-400 dark:text-slate-500'
                                         }`}
                                       >
                                         {ex.triageStatus}
                                       </span>
                                       <span aria-hidden="true">·</span>
-                                      <span className="text-slate-700">
+                                      <span className="text-slate-700 dark:text-slate-300">
                                         {ex.course}
                                       </span>
                                       {ex.topic && ex.topic !== 'General' && (
@@ -1010,15 +1143,15 @@ export default function App() {
                                     <h3
                                       className={`text-sm font-semibold leading-snug ${
                                         ex.completed
-                                          ? 'line-through text-slate-400'
-                                          : 'text-slate-900'
+                                          ? 'line-through text-slate-400 dark:text-slate-500'
+                                          : 'text-slate-900 dark:text-slate-100'
                                       }`}
                                     >
                                       {ex.title}
                                     </h3>
 
                                     {ex.description && (
-                                      <p className="text-xs text-slate-500 leading-relaxed">
+                                      <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
                                         {ex.description}
                                       </p>
                                     )}
@@ -1026,8 +1159,8 @@ export default function App() {
                                 </div>
 
                                 <div className="flex items-center gap-2 shrink-0">
-                                  <span className="flex items-center gap-1 font-mono tabular-nums text-xs text-slate-600 mr-1">
-                                    <Clock className="h-3 w-3 text-slate-400" />
+                                  <span className="flex items-center gap-1 font-mono tabular-nums text-xs text-slate-600 dark:text-slate-400 mr-1">
+                                    <Clock className="h-3 w-3 text-slate-400 dark:text-slate-500" />
                                     {ex.estimatedMinutes}m
                                   </span>
 
@@ -1038,7 +1171,7 @@ export default function App() {
                                         setActiveFocusExerciseId(ex.id)
                                       }
                                       aria-label={`Start Focus on ${ex.title}`}
-                                      className="flex items-center gap-1 rounded-lg bg-slate-900 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-slate-800 active:scale-[0.97] transition-all duration-150 whitespace-nowrap shrink-0"
+                                      className="flex items-center gap-1 rounded-lg bg-slate-900 dark:bg-slate-100 px-2.5 py-1.5 text-xs font-medium text-white dark:text-slate-900 hover:bg-slate-800 dark:hover:bg-slate-200 active:scale-[0.97] transition-all duration-150 whitespace-nowrap shrink-0"
                                     >
                                       <Play className="h-3 w-3" />
                                       Focus
@@ -1050,7 +1183,7 @@ export default function App() {
                                     onClick={() => handleCycleStatus(ex.id)}
                                     title="Change triage status"
                                     aria-label={`Change triage status for ${ex.title}`}
-                                    className="rounded-lg border border-slate-200 p-1.5 text-slate-500 hover:bg-slate-50 hover:text-slate-900 active:scale-95 transition-all duration-150"
+                                    className="rounded-lg border border-slate-200 dark:border-slate-700 p-1.5 text-slate-500 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800 hover:text-slate-900 dark:hover:text-slate-100 active:scale-95 transition-all duration-150"
                                   >
                                     <ArrowUpDown className="h-3.5 w-3.5" />
                                   </button>
@@ -1064,7 +1197,7 @@ export default function App() {
                                     }
                                     aria-expanded={isExpanded}
                                     aria-label={`Toggle AI rationale for ${ex.title}`}
-                                    className="rounded-lg border border-slate-200 p-1.5 text-slate-500 hover:bg-slate-50 hover:text-slate-900 active:scale-95 transition-all duration-150"
+                                    className="rounded-lg border border-slate-200 dark:border-slate-700 p-1.5 text-slate-500 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800 hover:text-slate-900 dark:hover:text-slate-100 active:scale-95 transition-all duration-150"
                                   >
                                     {isExpanded ? (
                                       <ChevronUp className="h-3.5 w-3.5" />
@@ -1079,7 +1212,7 @@ export default function App() {
                                       handleDeleteExercise(ex.id)
                                     }
                                     aria-label={`Remove ${ex.title}`}
-                                    className="rounded-lg p-1.5 text-slate-400 hover:bg-red-50 hover:text-red-600 active:scale-95 transition-all duration-150"
+                                    className="rounded-lg p-1.5 text-slate-400 hover:bg-red-50 dark:hover:bg-red-950/40 hover:text-red-600 dark:hover:text-red-400 active:scale-95 transition-all duration-150"
                                   >
                                     <Trash2 className="h-3.5 w-3.5" />
                                   </button>
@@ -1095,15 +1228,15 @@ export default function App() {
                                 }`}
                               >
                                 <div className="eq-accordion-inner">
-                                  <div className="mt-3.5 ml-7 rounded-xl bg-slate-50 p-3.5 text-xs space-y-1.5 border border-slate-100">
-                                    <p className="text-slate-600 leading-relaxed">
-                                      <strong className="font-semibold text-slate-900">
+                                  <div className="mt-3.5 ml-7 rounded-xl bg-slate-50 dark:bg-slate-950/60 p-3.5 text-xs space-y-1.5 border border-slate-100 dark:border-slate-800">
+                                    <p className="text-slate-600 dark:text-slate-300 leading-relaxed">
+                                      <strong className="font-semibold text-slate-900 dark:text-slate-100">
                                         Rationale:
                                       </strong>{' '}
                                       {ex.rationale}
                                     </p>
-                                    <p className="text-slate-600 leading-relaxed">
-                                      <strong className="font-semibold text-teal-800">
+                                    <p className="text-slate-600 dark:text-slate-300 leading-relaxed">
+                                      <strong className="font-semibold text-teal-800 dark:text-teal-400">
                                         Study Tip:
                                       </strong>{' '}
                                       {ex.studyTip}
@@ -1125,8 +1258,8 @@ export default function App() {
       </main>
 
       {/* Minimalist Footer */}
-      <footer className="mt-12 border-t border-slate-200/60 bg-white">
-        <div className="mx-auto flex max-w-[920px] items-center justify-between px-6 py-5 text-xs text-slate-400">
+      <footer className="mt-12 border-t border-slate-200/60 dark:border-slate-800/80 bg-white dark:bg-slate-900 transition-colors duration-200">
+        <div className="mx-auto flex max-w-[920px] items-center justify-between px-6 py-5 text-xs text-slate-400 dark:text-slate-500">
           <span>Equilibrio</span>
           <span>Study-Rest Balance & Exercise Triage</span>
         </div>
@@ -1136,6 +1269,7 @@ export default function App() {
       <AddExerciseModal
         isOpen={isAddModalOpen}
         initialTab={modalInitialTab}
+        existingCount={exercises.length}
         onClose={() => setIsAddModalOpen(false)}
         onAddExercise={handleAddSingleExercise}
         onBulkAddExercises={handleBulkAddExercises}

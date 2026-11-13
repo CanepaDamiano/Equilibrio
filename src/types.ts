@@ -2,6 +2,7 @@ export type ComplexityLevel = 1 | 2 | 3 | 4 | 5;
 export type ExamRelevance = 'Low' | 'Medium' | 'High' | 'Critical';
 export type TriageStatus = 'Essential' | 'High-Yield' | 'Optional' | 'Defer';
 export type ExerciseType = 'Proof' | 'Problem Set' | 'Coding Lab' | 'Case Study' | 'Drill' | 'Past Exam';
+export type ThemeMode = 'light' | 'dark' | 'system';
 
 export interface Exercise {
   id: string;
