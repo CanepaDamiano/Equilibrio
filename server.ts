@@ -3,11 +3,35 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import { GoogleGenAI, Type, ThinkingLevel } from '@google/genai';
+import {
+  DEFAULT_APP_PASSWORD,
+  hashPassword,
+  deriveSessionToken,
+  verifyPasswordAgainstHash,
+  verifySessionTokenAgainstHash,
+} from './src/utils/authSecurity';
 
 dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+function getActivePasswordHash(): string {
+  const envPassword = process.env.APP_PASSWORD?.trim();
+  if (envPassword && envPassword !== 'MY_APP_PASSWORD') {
+    return hashPassword(envPassword);
+  }
+  return hashPassword(DEFAULT_APP_PASSWORD);
+}
+
+function extractBearerToken(req: express.Request): string | null {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || typeof authHeader !== 'string') return null;
+  if (authHeader.toLowerCase().startsWith('bearer ')) {
+    return authHeader.slice(7).trim();
+  }
+  return null;
+}
 
 function getGenAIClient(): GoogleGenAI | null {
   const apiKey = process.env.GEMINI_API_KEY;
@@ -54,8 +78,50 @@ async function startServer() {
 
   app.use(express.json({ limit: '15mb' }));
 
+  // Authentication Middleware for protected API routes
+  const requireAuth: express.RequestHandler = (req, res, next) => {
+    const token = extractBearerToken(req);
+    const passwordHash = getActivePasswordHash();
+    if (!verifySessionTokenAgainstHash(token, passwordHash)) {
+      return res.status(401).json({
+        error: 'Unauthorized. Please unlock the workspace with your password.',
+      });
+    }
+    next();
+  };
+
+  // Auth Status Endpoint
+  app.get('/api/auth/status', (req, res) => {
+    const token = extractBearerToken(req);
+    const passwordHash = getActivePasswordHash();
+    const authenticated = verifySessionTokenAgainstHash(token, passwordHash);
+    return res.json({
+      locked: true,
+      authenticated,
+    });
+  });
+
+  // Auth Login Endpoint (password is strictly server-controlled via APP_PASSWORD)
+  app.post('/api/auth/login', (req, res) => {
+    const { password } = req.body || {};
+    const passwordHash = getActivePasswordHash();
+
+    if (!verifyPasswordAgainstHash(String(password || ''), passwordHash)) {
+      return res.status(200).json({
+        ok: false,
+        error: 'Incorrect password. Please try again.',
+      });
+    }
+
+    const token = deriveSessionToken(passwordHash);
+    return res.json({
+      ok: true,
+      token,
+    });
+  });
+
   // 1. AI Triage Endpoint: Evaluates exercises against the student's available time & sleep window
-  app.post('/api/triage', async (req, res) => {
+  app.post('/api/triage', requireAuth, async (req, res) => {
     const { exercises, budget } = req.body;
 
     if (!Array.isArray(exercises) || exercises.length === 0) {
@@ -178,7 +244,7 @@ ${JSON.stringify(
   });
 
   // 2. AI Assignment Text Parser Endpoint: Extracts structured exercises from raw pasted syllabus / assignment text
-  app.post('/api/parse-assignment', async (req, res) => {
+  app.post('/api/parse-assignment', requireAuth, async (req, res) => {
     const { rawText, defaultCourse } = req.body;
     if (!rawText || typeof rawText !== 'string' || !rawText.trim()) {
       return res.status(400).json({ error: 'Please paste assignment text to parse.' });
@@ -300,7 +366,7 @@ ${rawText}`,
   });
 
   // 3. Multimodal File Upload Endpoint: Extracts exercises from uploaded PDF, images, or text documents
-  app.post('/api/parse-file', async (req, res) => {
+  app.post('/api/parse-file', requireAuth, async (req, res) => {
     const { fileName, mimeType, base64Data, textContent, defaultCourse } = req.body;
 
     if (!base64Data && !textContent) {

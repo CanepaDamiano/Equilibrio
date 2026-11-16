@@ -6,3 +6,6 @@ coverage/
 *.log
 .env*
 !.env.example
+.equilibrio-auth.json
+.playwright-cli/
+

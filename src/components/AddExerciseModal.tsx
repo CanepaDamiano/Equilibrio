@@ -12,6 +12,7 @@ interface AddExerciseModalProps {
   isOpen: boolean;
   initialTab?: 'file' | 'single' | 'paste';
   existingCount?: number;
+  authToken?: string;
   onClose: () => void;
   onAddExercise: (
     ex: Omit<
@@ -32,12 +33,21 @@ export const AddExerciseModal: React.FC<AddExerciseModalProps> = ({
   isOpen,
   initialTab = 'file',
   existingCount = 0,
+  authToken = '',
   onClose,
   onAddExercise,
   onBulkAddExercises,
 }) => {
   const [activeTab, setActiveTab] = useState<'file' | 'single' | 'paste'>(initialTab);
   const [importMode, setImportMode] = useState<'merge' | 'replace'>('merge');
+
+  const buildAuthHeaders = (): Record<string, string> => {
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (authToken) {
+      headers['Authorization'] = `Bearer ${authToken}`;
+    }
+    return headers;
+  };
 
   // File upload state
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -167,7 +177,7 @@ export const AddExerciseModal: React.FC<AddExerciseModalProps> = ({
           const timer = setTimeout(() => controller.abort(), 45000);
           const response = await fetch('/api/parse-file', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: buildAuthHeaders(),
             body: JSON.stringify({
               fileName,
               mimeType: selectedFile.type || 'text/plain',
@@ -231,7 +241,7 @@ export const AddExerciseModal: React.FC<AddExerciseModalProps> = ({
           const timer = setTimeout(() => controller.abort(), 45000);
           const response = await fetch('/api/parse-file', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: buildAuthHeaders(),
             body: JSON.stringify({
               fileName,
               mimeType: inferredMimeType,
@@ -341,7 +351,7 @@ export const AddExerciseModal: React.FC<AddExerciseModalProps> = ({
       const timer = setTimeout(() => controller.abort(), 45000);
       const response = await fetch('/api/parse-assignment', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: buildAuthHeaders(),
         body: JSON.stringify({
           rawText: rawPasteText,
           defaultCourse: fallbackCourseName,

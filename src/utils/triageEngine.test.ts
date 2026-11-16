@@ -312,5 +312,30 @@ Sistemi Lineari Base,Algebra Lineare,Matrici,60,2,Bassa,Calcolo`;
   assert.equal(selectedAfterAi.length, 1);
 });
 
+import {
+  DEFAULT_APP_PASSWORD,
+  hashPassword,
+  deriveSessionToken,
+  verifyPasswordAgainstHash,
+  verifySessionTokenAgainstHash,
+} from './authSecurity';
+
+test('authSecurity hashes passwords, derives deterministic HMAC tokens, and invalidates old tokens on password change', () => {
+  const hash1 = hashPassword(DEFAULT_APP_PASSWORD);
+  assert.equal(verifyPasswordAgainstHash('equilibrio2026', hash1), true);
+  assert.equal(verifyPasswordAgainstHash('wrong-password', hash1), false);
+
+  const token1 = deriveSessionToken(hash1);
+  assert.equal(verifySessionTokenAgainstHash(token1, hash1), true);
+  assert.equal(verifySessionTokenAgainstHash('forged-token', hash1), false);
+
+  // Changing password produces a new hash and automatically invalidates token1
+  const hash2 = hashPassword('newSecret2026');
+  assert.equal(verifySessionTokenAgainstHash(token1, hash2), false);
+  const token2 = deriveSessionToken(hash2);
+  assert.equal(verifySessionTokenAgainstHash(token2, hash2), true);
+});
+
+
 
 

@@ -18,6 +18,7 @@ import {
 import { AddExerciseModal } from './components/AddExerciseModal';
 import { FocusSessionModal } from './components/FocusSessionModal';
 import { EveningTimeline } from './components/EveningTimeline';
+import { PasswordGate } from './components/PasswordGate';
 import {
   Plus,
   Sparkles,
@@ -34,11 +35,13 @@ import {
   Sun,
   Moon,
   Monitor,
+  Lock,
 } from 'lucide-react';
 
 const STORAGE_KEY_EXERCISES = 'equilibrio_exercises_v1';
 const STORAGE_KEY_BUDGET = 'equilibrio_budget_v1';
 const STORAGE_KEY_THEME = 'equilibrio_theme_v1';
+const STORAGE_KEY_AUTH = 'equilibrio_auth_token_v1';
 
 const DEFAULT_BUDGET: StudentBudget = {
   availableMinutes: 120,
@@ -146,6 +149,75 @@ export default function App() {
     mediaQuery.addEventListener('change', handleSystemChange);
     return () => mediaQuery.removeEventListener('change', handleSystemChange);
   }, [themeMode]);
+
+  // Password authentication state
+  const [authToken, setAuthToken] = useState<string>(() => {
+    try {
+      return localStorage.getItem(STORAGE_KEY_AUTH) || '';
+    } catch {
+      return '';
+    }
+  });
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => {
+    try {
+      return Boolean(localStorage.getItem(STORAGE_KEY_AUTH));
+    } catch {
+      return false;
+    }
+  });
+
+  // Verify stored token against server on startup
+  useEffect(() => {
+    let active = true;
+    const checkStatus = async () => {
+      if (!authToken) {
+        if (active) setIsAuthenticated(false);
+        return;
+      }
+      try {
+        const res = await fetch('/api/auth/status', {
+          headers: { Authorization: `Bearer ${authToken}` },
+        });
+        if (!active) return;
+        if (res.ok) {
+          const data = await res.json();
+          if (data.authenticated) {
+            setIsAuthenticated(true);
+          } else {
+            localStorage.removeItem(STORAGE_KEY_AUTH);
+            setAuthToken('');
+            setIsAuthenticated(false);
+          }
+        }
+      } catch {
+        // Keep current session state on transient network check error
+      }
+    };
+    void checkStatus();
+    return () => {
+      active = false;
+    };
+  }, [authToken]);
+
+  const handleAuthenticated = (token: string) => {
+    try {
+      localStorage.setItem(STORAGE_KEY_AUTH, token);
+    } catch {
+      // Ignore storage write errors
+    }
+    setAuthToken(token);
+    setIsAuthenticated(true);
+  };
+
+  const handleLockWorkspace = () => {
+    try {
+      localStorage.removeItem(STORAGE_KEY_AUTH);
+    } catch {
+      // Ignore storage errors
+    }
+    setAuthToken('');
+    setIsAuthenticated(false);
+  };
 
   // Primary workspace view tab
   const [activeView, setActiveView] = useState<'exercises' | 'schedule'>('exercises');
@@ -281,15 +353,26 @@ export default function App() {
     try {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 35000);
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+      };
+      if (authToken) {
+        headers['Authorization'] = `Bearer ${authToken}`;
+      }
       const response = await fetch('/api/triage', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({ exercises: targetList, budget: targetBudget }),
         signal: controller.signal,
       });
       clearTimeout(timer);
 
       if (requestId !== triageRequestIdRef.current) return;
+
+      if (response.status === 401) {
+        handleLockWorkspace();
+        return;
+      }
 
       const data = await response.json();
 
@@ -500,6 +583,16 @@ export default function App() {
     { id: 'system', label: 'System', icon: Monitor },
   ];
 
+  if (!isAuthenticated) {
+    return (
+      <PasswordGate
+        themeMode={themeMode}
+        onChangeTheme={setThemeMode}
+        onAuthenticated={handleAuthenticated}
+      />
+    );
+  }
+
   return (
     <div id="top" className="min-h-screen flex flex-col bg-[#FAFAFA] dark:bg-[#090D16] text-slate-900 dark:text-slate-100 transition-colors duration-200">
       {/* Minimalist Top Bar */}
@@ -583,6 +676,17 @@ export default function App() {
                 );
               })}
             </div>
+
+            {/* Lock Session Button */}
+            <button
+              type="button"
+              onClick={handleLockWorkspace}
+              aria-label="Lock workspace"
+              title="Lock workspace"
+              className="flex items-center justify-center rounded-lg border border-slate-200/80 dark:border-slate-800 bg-slate-100/80 dark:bg-slate-900 p-2 text-slate-500 dark:text-slate-400 hover:bg-white dark:hover:bg-slate-800 hover:text-slate-900 dark:hover:text-slate-100 transition-all duration-150 shrink-0"
+            >
+              <Lock className="h-3.5 w-3.5" />
+            </button>
 
             {exercises.length > 0 && (
               <button
@@ -1270,6 +1374,7 @@ export default function App() {
         isOpen={isAddModalOpen}
         initialTab={modalInitialTab}
         existingCount={exercises.length}
+        authToken={authToken}
         onClose={() => setIsAddModalOpen(false)}
         onAddExercise={handleAddSingleExercise}
         onBulkAddExercises={handleBulkAddExercises}
