@@ -2,8 +2,6 @@
 
 **Equilibrio** is a full-stack academic productivity and cognitive load management web application designed for university students. When faced with more assigned problem sets, proofs, and drills than can reasonably fit into a single evening, Equilibrio uses AI and a deterministic pedagogical triage engine to select the highest-impact exercises that fit within the student's available focus window—protecting their sleep schedule and preventing late-night burnout.
 
-**Live Application**: [https://equilibrio-1.ai.studio/](https://equilibrio-1.ai.studio/)
-
 ---
 
 ## Key Features
